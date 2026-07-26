@@ -2,6 +2,7 @@
 
 import csv
 import logging
+import random
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -9,7 +10,7 @@ from pathlib import Path
 import ee
 import numpy as np
 
-from model.data_pipeline.config import GOES_SCALE_METERS, PipelineConfig
+from model.data_pipeline.config import PipelineConfig
 from model.data_pipeline.labels import build_label_image, sample_mask
 from model.data_pipeline.matching import (
     FireDetection,
@@ -22,7 +23,7 @@ from model.data_pipeline.negative_sampling import (
     sample_negative_locations,
     sample_negative_timestamps,
 )
-from model.data_pipeline.patches import compute_patch_region, extract_patch, native_projection
+from model.data_pipeline.patches import compute_patch_region, extract_patch, target_projection
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +38,22 @@ class Sample:
     lon: float
 
 
-def build_positive_samples(cfg: PipelineConfig, start: datetime, end: datetime) -> list[Sample]:
-    """One sample per VIIRS detection matched to a GOES-19 capture."""
+def build_positive_samples(
+    cfg: PipelineConfig, start: datetime, end: datetime, limit: int | None = None, seed: int = 0
+) -> list[Sample]:
+    """One sample per VIIRS detection matched to a GOES-19 capture.
+
+    The detection list is subsampled (randomly, not just truncated - Earth Engine
+    returns detections in scan order, so a plain [:n] slice would geographically
+    bias the dataset) down to min(limit, cfg.max_detections_per_chunk) before
+    matching against GOES-19 - matching does a couple of Earth Engine round-trips
+    per detection, so a single high-activity day can otherwise take hours.
+    """
     detections = fetch_viirs_detections(cfg.argentina_bbox, start, end, cfg.min_viirs_confidence)
+    effective_limit = cfg.max_detections_per_chunk if limit is None else min(limit, cfg.max_detections_per_chunk)
+    if len(detections) > effective_limit:
+        logger.warning("Subsampling %d detections down to %d for %s..%s", len(detections), effective_limit, start.date(), end.date())
+        detections = random.Random(seed).sample(detections, effective_limit)
     matched = match_detections_to_goes(detections, cfg.match_window_minutes)
 
     # Group by capture time so a patch's mask reflects every fire seen in that GOES
@@ -48,12 +62,12 @@ def build_positive_samples(cfg: PipelineConfig, start: datetime, end: datetime) 
     for m in matched:
         detections_by_capture.setdefault(m.goes_capture_time, []).append(m.detection)
 
+    projection = target_projection()
     samples: list[Sample] = []
     for m in matched:
-        region = compute_patch_region(m.detection.lat, m.detection.lon, cfg.patch_size_px, GOES_SCALE_METERS)
+        region = compute_patch_region(m.detection.lat, m.detection.lon, cfg.patch_size_px, projection)
         try:
             patch = extract_patch(m.goes_image, region, cfg.patch_size_px)
-            projection = native_projection(m.goes_image)
             label_image = build_label_image(detections_by_capture[m.goes_capture_time], projection)
             mask = sample_mask(label_image, region)
         except ee.EEException as exc:
@@ -85,12 +99,13 @@ def build_negative_samples(
     locations = sample_negative_locations(n, land_geometry, positive_locations, cfg.min_negative_distance_km)
     timestamps = sample_negative_timestamps(start, end, len(locations))
 
+    projection = target_projection()
     samples: list[Sample] = []
     for (lat, lon), ts in zip(locations, timestamps):
         goes_image = find_nearest_goes_capture(ts, cfg.match_window_minutes)
         if goes_image is None:
             continue
-        region = compute_patch_region(lat, lon, cfg.patch_size_px, GOES_SCALE_METERS)
+        region = compute_patch_region(lat, lon, cfg.patch_size_px, projection)
         try:
             patch = extract_patch(goes_image, region, cfg.patch_size_px)
         except ee.EEException as exc:

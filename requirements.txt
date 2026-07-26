@@ -1,5 +1,12 @@
 earthengine-api
 python-dotenv
 numpy
-torch
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch==2.13.0+cu126
 matplotlib
+fastapi==0.139.2
+uvicorn[standard]==0.51.0
+sqlalchemy>=2.0
+psycopg[binary]>=3.1
+geoalchemy2
+alembic

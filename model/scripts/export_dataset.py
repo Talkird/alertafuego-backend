@@ -12,12 +12,14 @@ Example:
 
 import argparse
 import logging
+from collections.abc import Iterator
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from model.data_pipeline.config import default_config
 from model.data_pipeline.dataset_builder import (
+    Sample,
     assign_temporal_splits,
     build_negative_samples,
     build_positive_samples,
@@ -27,6 +29,19 @@ from model.data_pipeline.dataset_builder import (
 from model.data_pipeline.ee_client import init_earth_engine
 
 logger = logging.getLogger(__name__)
+
+#: Earth Engine caps query results at 5000 elements (see matching.MAX_VIIRS_FEATURES_PER_QUERY).
+#: Pulling one day at a time instead of the whole requested range keeps every query
+#: well under that cap, even across a full dry season.
+CHUNK_DAYS = 1
+
+
+def _daterange_chunks(start: datetime, end: datetime, days: int = CHUNK_DAYS) -> Iterator[tuple[datetime, datetime]]:
+    chunk_start = start
+    while chunk_start < end:
+        chunk_end = min(chunk_start + timedelta(days=days), end)
+        yield chunk_start, chunk_end
+        chunk_start = chunk_end
 
 
 def _parse_date(value: str) -> datetime:
@@ -58,16 +73,40 @@ def main() -> None:
         negative_to_positive_ratio=args.negative_ratio,
     )
 
-    positives = build_positive_samples(cfg, args.start_date, args.end_date)
-    if args.limit is not None:
-        positives = positives[: args.limit]
+    positives: list[Sample] = []
+    negatives: list[Sample] = []
+    remaining_limit = args.limit
 
-    n_negatives = round(len(positives) * cfg.negative_to_positive_ratio)
-    if args.limit is not None:
-        n_negatives = min(n_negatives, max(args.limit - len(positives), 0))
+    for chunk_start, chunk_end in _daterange_chunks(args.start_date, args.end_date):
+        if remaining_limit is not None and remaining_limit <= 0:
+            break
 
-    positive_locations = [(sample.lat, sample.lon) for sample in positives]
-    negatives = build_negative_samples(cfg, args.start_date, args.end_date, n_negatives, positive_locations)
+        # Split the remaining --limit between positives and negatives up front (by
+        # ratio) - otherwise a limit exactly matched by available detections
+        # starves negatives of budget.
+        positive_limit = None
+        if remaining_limit is not None:
+            positive_limit = max(1, round(remaining_limit / (1 + cfg.negative_to_positive_ratio)))
+
+        chunk_positives = build_positive_samples(cfg, chunk_start, chunk_end, limit=positive_limit)
+
+        n_negatives = round(len(chunk_positives) * cfg.negative_to_positive_ratio)
+        if remaining_limit is not None:
+            n_negatives = min(n_negatives, max(remaining_limit - len(chunk_positives), 0))
+
+        positive_locations = [(sample.lat, sample.lon) for sample in chunk_positives]
+        chunk_negatives = build_negative_samples(cfg, chunk_start, chunk_end, n_negatives, positive_locations)
+
+        positives.extend(chunk_positives)
+        negatives.extend(chunk_negatives)
+        if remaining_limit is not None:
+            remaining_limit -= len(chunk_positives) + len(chunk_negatives)
+
+        logger.info(
+            "Chunk %s..%s: %d positive, %d negative (running total %d)",
+            chunk_start.date(), chunk_end.date(), len(chunk_positives), len(chunk_negatives),
+            len(positives) + len(negatives),
+        )
 
     all_samples = positives + negatives
     splits = assign_temporal_splits(all_samples, args.train_end_date.date(), args.val_end_date.date())

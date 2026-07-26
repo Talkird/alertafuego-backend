@@ -18,7 +18,11 @@ def build_label_image(fire_points: list[FireDetection], projection: ee.Projectio
     features = ee.FeatureCollection(
         [ee.Feature(ee.Geometry.Point([d.lon, d.lat]), {LABEL_BAND_NAME: 1}) for d in fire_points]
     )
-    label = features.reduceToImage(properties=[LABEL_BAND_NAME], reducer=ee.Reducer.max())
+    # reduceToImage does not reliably name its output band after the input property,
+    # so the band is renamed explicitly rather than relied upon implicitly.
+    label = features.reduceToImage(properties=[LABEL_BAND_NAME], reducer=ee.Reducer.max()).rename(
+        LABEL_BAND_NAME
+    )
     return label.unmask(0).reproject(projection)
 
 

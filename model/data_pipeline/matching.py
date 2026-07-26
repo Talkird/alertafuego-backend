@@ -16,6 +16,9 @@ from model.data_pipeline.config import BBox, GOES_COLLECTION_ID, VIIRS_COLLECTIO
 
 logger = logging.getLogger(__name__)
 
+#: Earth Engine caps FeatureCollection.getInfo() at 5000 elements per query.
+MAX_VIIRS_FEATURES_PER_QUERY = 4000
+
 
 @dataclass(frozen=True)
 class FireDetection:
@@ -57,8 +60,14 @@ def fetch_viirs_detections(
         point_collections = image_list.map(
             lambda img: _fire_points_for_image(ee.Image(img), region, min_confidence)
         )
-        merged = ee.FeatureCollection(point_collections).flatten()
+        merged = ee.FeatureCollection(point_collections).flatten().limit(MAX_VIIRS_FEATURES_PER_QUERY)
         features = merged.getInfo()["features"]
+        if len(features) == MAX_VIIRS_FEATURES_PER_QUERY:
+            logger.warning(
+                "%s hit the %d-feature query cap for %s..%s - some detections were dropped, "
+                "narrow the date range or bbox for a complete pull",
+                collection_id, MAX_VIIRS_FEATURES_PER_QUERY, start.date(), end.date(),
+            )
 
         for feature in features:
             lon, lat = feature["geometry"]["coordinates"]
