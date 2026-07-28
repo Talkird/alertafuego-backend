@@ -1,7 +1,9 @@
-"""Database write operations."""
+"""Database read/write operations."""
+
+from datetime import datetime
 
 from geoalchemy2.elements import WKTElement
-from sqlalchemy import insert
+from sqlalchemy import func, insert, select
 from sqlalchemy.orm import Session
 
 from backend.app.models import Detection
@@ -29,3 +31,25 @@ def save_detections(session: Session, result: DetectionResult) -> int:
     session.execute(insert(Detection), rows)
     session.commit()
     return len(rows)
+
+
+def list_detections(
+    session: Session,
+    bbox: tuple[float, float, float, float] | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    limit: int = 500,
+) -> list[Detection]:
+    """Query stored detections, optionally filtered by bbox (west, south, east, north)
+    and/or image_time range. Ordered most-recent capture first."""
+    query = select(Detection)
+    if bbox is not None:
+        west, south, east, north = bbox
+        envelope = func.ST_MakeEnvelope(west, south, east, north, 4326)
+        query = query.where(func.ST_Intersects(Detection.location, envelope))
+    if since is not None:
+        query = query.where(Detection.image_time >= since)
+    if until is not None:
+        query = query.where(Detection.image_time <= until)
+    query = query.order_by(Detection.image_time.desc()).limit(limit)
+    return list(session.scalars(query))

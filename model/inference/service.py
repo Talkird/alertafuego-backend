@@ -5,10 +5,12 @@ from dataclasses import dataclass
 from datetime import datetime
 
 import torch
+from shapely.geometry.base import BaseGeometry
 
 from model.data_pipeline.config import BBox
 from model.data_pipeline.ee_client import init_earth_engine
 from model.inference.config import InferenceConfig, default_config
+from model.inference.land_filter import filter_to_polygon, load_argentina_polygon
 from model.inference.predictor import load_model, predict_tiles
 from model.inference.raster_fetch import fetch_calibrated_chunks, get_latest_goes_image
 from model.inference.tiling import assemble_raster, pixel_to_latlon, tile_raster
@@ -23,6 +25,7 @@ class InferenceContext:
     band_stats: BandStats
     device: torch.device
     cfg: InferenceConfig
+    argentina_polygon: BaseGeometry
 
 
 @dataclass(frozen=True)
@@ -41,8 +44,11 @@ def load_context(cfg: InferenceConfig | None = None) -> InferenceContext:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     band_stats = load_band_stats(cfg.checkpoint_dir / "norm_stats.json")
     model = load_model(cfg.checkpoint_dir / "model_best.pt", device)
+    argentina_polygon = load_argentina_polygon(cfg.argentina_bbox)
     logger.info("Inference context loaded on device: %s", device)
-    return InferenceContext(model=model, band_stats=band_stats, device=device, cfg=cfg)
+    return InferenceContext(
+        model=model, band_stats=band_stats, device=device, cfg=cfg, argentina_polygon=argentina_polygon
+    )
 
 
 def run_detection(ctx: InferenceContext, bbox: BBox, threshold: float) -> DetectionResult:
@@ -67,6 +73,8 @@ def run_detection(ctx: InferenceContext, bbox: BBox, threshold: float) -> Detect
                 row_offset + int(row), col_offset + int(col), bbox, (cropped_height, cropped_width)
             )
             detections.append((lat, lon, float(tile_probs[row, col])))
+
+    detections = filter_to_polygon(detections, ctx.argentina_polygon)
 
     logger.info("Detection run: %d chunks, %d tiles, %d detections", len(chunks), len(tiles), len(detections))
     return DetectionResult(

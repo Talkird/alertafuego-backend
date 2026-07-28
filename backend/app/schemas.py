@@ -25,3 +25,16 @@ class DetectionResponse(BaseModel):
     chunk_count: int
     detection_count: int
     detections: list[Detection]
+
+
+class StoredDetection(BaseModel):
+    """One row from the `detections` table - shape mirrors the DB schema directly."""
+
+    id: int
+    lat: float
+    lon: float
+    probability: float
+    image_time: datetime
+    detected_at: datetime
+    bbox: BBoxSchema
+    threshold: float

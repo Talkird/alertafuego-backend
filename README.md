@@ -10,7 +10,7 @@ por qué esta forma de parche, por qué este umbral, bugs encontrados y cómo se
 resolvieron, etc.) está en [`docs/DECISIONS.md`](docs/DECISIONS.md) — este README es
 la guía operativa de "cómo correr esto hoy", no el historial de decisiones.
 
-## Estado actual (2026-07-26)
+## Estado actual (2026-07-28)
 
 - ✅ Fase 1 — pipeline de datos (`model/data_pipeline/`): exporta dataset GOES-19/VIIRS.
 - ✅ Fase 2 — entrenamiento (`model/training/`): modelo entrenado, checkpoint en
@@ -19,8 +19,13 @@ la guía operativa de "cómo correr esto hoy", no el historial de decisiones.
 - ✅ Fase 3 — inferencia servida (`model/inference/` + `backend/app/`): dos endpoints
   on-demand que corren el modelo contra la imagen GOES-19 más reciente.
 - ✅ Fase 4 — persistencia: las detecciones se guardan en Postgres/PostGIS (Supabase).
-- ⏳ Pendiente: endpoint de lectura/consulta para el frontend, ampliar el dataset de
-  entrenamiento a más de un mes/estación, clustering de detecciones, autenticación.
+- ✅ Detecciones restringidas al polígono real de Argentina (no al rectángulo del bbox
+  — evita falsos positivos en Paraguay/Bolivia/Chile/Brasil/Uruguay).
+- ✅ `GET /detections` — endpoint de lectura sobre lo ya persistido (el que debería
+  usar el frontend para el mapa/tabla de logs).
+- ⏳ Pendiente: ampliar el dataset de entrenamiento a más de un mes/estación,
+  clustering de detecciones, autenticación, deduplicar detecciones repetidas entre
+  corridas.
 
 ## Setup
 
@@ -87,21 +92,27 @@ request). Endpoints:
 - `POST /detect/argentina` — corre sobre todo el país (fetch en chunks espaciales por
   el límite de píxeles de Earth Engine), tarda ~50-55s.
 
-Ambos: buscan la imagen GOES-19 más reciente, corren el modelo, **guardan las
-detecciones en Postgres**, y devuelven el mismo resultado en la respuesta HTTP
-(`image_time`, `bbox`, `threshold`, `chunk_count`, `detections: [{lat, lon,
-probability}]`). Docs interactivas en `/docs`.
+Ambos: buscan la imagen GOES-19 más reciente, corren el modelo (filtrando resultados
+al polígono real de Argentina, no al rectángulo del bbox), **guardan las detecciones
+en Postgres**, y devuelven el mismo resultado en la respuesta HTTP (`image_time`,
+`bbox`, `threshold`, `chunk_count`, `detections: [{lat, lon, probability}]`).
 
-Ver esquema de la tabla `detections` y por qué se modeló así en `docs/DECISIONS.md`
-(entrada de persistencia, fase 4).
+- `GET /detections` — lectura pura sobre lo ya guardado, sin llamar a Earth Engine,
+  rápido. Filtros opcionales por query params: `west/south/east/north` (bbox),
+  `since`/`until` (rango de `image_time`, ISO datetime), `limit` (default 500, tope
+  5000). Devuelve cada fila con forma `{id, lat, lon, probability, image_time,
+  detected_at, bbox, threshold}` — **este es el endpoint que debería usar el
+  frontend** para el mapa y la tabla de logs, no `/detect/*` (esos disparan un scan
+  en vivo con efecto secundario, no son para lectura rutinaria).
+
+Docs interactivas en `/docs`. Ver esquema de la tabla `detections` y por qué se
+modeló así en `docs/DECISIONS.md` (entradas de persistencia, fase 4).
 
 ## Limitaciones conocidas
 
 - Dataset de entrenamiento cubre un solo mes (septiembre 2025) — el modelo tiene señal
   real pero no vio otras estaciones/regímenes de fuego. Reentrenar con más datos es la
   mejora de mayor impacto pendiente.
-- Sin endpoint de lectura para el frontend — las detecciones se guardan pero no hay
-  forma de consultarlas todavía vía API (próxima fase natural).
 - Sin clustering: cada píxel de fuego es una detección separada, no agrupadas por
   foco/evento.
 - Sin autenticación en ningún endpoint.
