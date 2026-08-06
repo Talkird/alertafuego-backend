@@ -1,12 +1,13 @@
 """Database read/write operations."""
 
 from datetime import datetime
+from uuid import UUID
 
 from geoalchemy2.elements import WKTElement
 from sqlalchemy import func, insert, select
 from sqlalchemy.orm import Session
 
-from backend.app.models import Detection
+from backend.app.models import Detection, FalsePositiveReport, ReportCategory
 from model.inference.service import DetectionResult
 
 
@@ -39,10 +40,17 @@ def list_detections(
     since: datetime | None = None,
     until: datetime | None = None,
     limit: int = 500,
-) -> list[Detection]:
+) -> list[tuple[Detection, int]]:
     """Query stored detections, optionally filtered by bbox (west, south, east, north)
-    and/or image_time range. Ordered most-recent capture first."""
-    query = select(Detection)
+    and/or image_time range. Ordered most-recent capture first. Each row is paired
+    with its false-positive report count (correlated subquery, no join fan-out)."""
+    report_count = (
+        select(func.count(FalsePositiveReport.id))
+        .where(FalsePositiveReport.detection_id == Detection.id)
+        .correlate(Detection)
+        .scalar_subquery()
+    )
+    query = select(Detection, report_count.label("report_count"))
     if bbox is not None:
         west, south, east, north = bbox
         envelope = func.ST_MakeEnvelope(west, south, east, north, 4326)
@@ -52,4 +60,30 @@ def list_detections(
     if until is not None:
         query = query.where(Detection.image_time <= until)
     query = query.order_by(Detection.image_time.desc()).limit(limit)
+    return [(detection, count) for detection, count in session.execute(query)]
+
+
+def list_reports(session: Session, detection_id: int) -> list[FalsePositiveReport]:
+    """All false-positive reports for one detection, most recent first."""
+    query = (
+        select(FalsePositiveReport)
+        .where(FalsePositiveReport.detection_id == detection_id)
+        .order_by(FalsePositiveReport.created_at.desc())
+    )
     return list(session.scalars(query))
+
+
+def create_report(
+    session: Session,
+    detection_id: int,
+    user_id: UUID,
+    category: ReportCategory,
+    comment: str | None,
+) -> FalsePositiveReport:
+    """Insert a false-positive report. Raises sqlalchemy.exc.IntegrityError if this
+    user already reported this detection, or if detection_id doesn't exist."""
+    report = FalsePositiveReport(detection_id=detection_id, user_id=user_id, category=category, comment=comment)
+    session.add(report)
+    session.commit()
+    session.refresh(report)
+    return report

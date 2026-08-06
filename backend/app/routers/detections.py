@@ -42,6 +42,7 @@ def get_detections(
             detected_at=row.detected_at,
             bbox=BBoxSchema(west=row.bbox_west, south=row.bbox_south, east=row.bbox_east, north=row.bbox_north),
             threshold=row.threshold,
+            report_count=report_count,
         )
-        for row in rows
+        for row, report_count in rows
     ]

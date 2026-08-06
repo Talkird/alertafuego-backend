@@ -11,3 +11,4 @@ psycopg[binary]>=3.1
 geoalchemy2
 alembic
 shapely
+PyJWT
