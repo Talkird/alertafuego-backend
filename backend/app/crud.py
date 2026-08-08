@@ -87,3 +87,26 @@ def create_report(
     session.commit()
     session.refresh(report)
     return report
+
+
+def update_report(
+    session: Session,
+    detection_id: int,
+    user_id: UUID,
+    updates: dict,
+) -> FalsePositiveReport | None:
+    """Apply a partial update (category and/or comment) to this user's existing
+    report for this detection. Returns None if they haven't reported it yet."""
+    report = session.scalar(
+        select(FalsePositiveReport).where(
+            FalsePositiveReport.detection_id == detection_id,
+            FalsePositiveReport.user_id == user_id,
+        )
+    )
+    if report is None:
+        return None
+    for field, value in updates.items():
+        setattr(report, field, value)
+    session.commit()
+    session.refresh(report)
+    return report
