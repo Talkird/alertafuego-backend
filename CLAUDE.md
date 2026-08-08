@@ -76,6 +76,8 @@ as a Proyecto Final de Ingeniería (PFI) at UADE (Ingeniería en Informática). 
 combines geostationary satellite imagery (GOES-19) with an AI model trained using
 polar-orbiting satellite fire products (VIIRS) as ground truth labels.
 
+Frontend GitHub Repository: https://github.com/Talkird/alertafuego-frontend
+
 ## Datasets
 
 https://developers.google.com/earth-engine/datasets/catalog/NASA_LANCE_NOAA20_VIIRS_C2 Earth Engine Snippet ee.ImageCollection("NASA/LANCE/NOAA20_VIIRS/C2") Cadence 1 Day
