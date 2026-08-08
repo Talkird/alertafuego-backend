@@ -43,6 +43,9 @@ class FalsePositiveReport(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     detection_id: Mapped[int] = mapped_column(ForeignKey("detections.id"), nullable=False, index=True)
     user_id: Mapped[uuid_module.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
-    category: Mapped[ReportCategory] = mapped_column(Enum(ReportCategory, name="report_category"), nullable=False)
+    category: Mapped[ReportCategory] = mapped_column(
+        Enum(ReportCategory, name="report_category", values_callable=lambda obj: [e.value for e in obj]),
+        nullable=False,
+    )
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)

@@ -26,7 +26,6 @@ report_category = postgresql.ENUM(
 
 def upgrade() -> None:
     """Upgrade schema."""
-    report_category.create(op.get_bind())
     op.create_table(
         'false_positive_reports',
         sa.Column('id', sa.Integer(), autoincrement=True, nullable=False),
@@ -48,4 +47,3 @@ def downgrade() -> None:
     """Downgrade schema."""
     op.drop_index(op.f('ix_false_positive_reports_detection_id'), table_name='false_positive_reports')
     op.drop_table('false_positive_reports')
-    report_category.drop(op.get_bind())
