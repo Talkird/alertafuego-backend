@@ -9,10 +9,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.app.auth import get_current_user
-from backend.app.crud import create_report, list_reports
+from backend.app.crud import create_report, list_reports, update_report
 from backend.app.db import get_db
 from backend.app.models import Detection
-from backend.app.schemas import ReportCreate, ReportPublic, ReportResponse
+from backend.app.schemas import ReportCreate, ReportPublic, ReportResponse, ReportUpdate
 
 router = APIRouter(prefix="/detections")
 
@@ -38,3 +38,21 @@ def report_false_positive(
     except IntegrityError as exc:
         db.rollback()
         raise HTTPException(status_code=409, detail="You already reported this detection") from exc
+
+
+@router.patch("/{detection_id}/reports", response_model=ReportResponse)
+def edit_report(
+    detection_id: int,
+    payload: ReportUpdate,
+    user_id: UUID = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ReportResponse:
+    updates = payload.model_dump(exclude_unset=True)
+    if "category" in updates:
+        updates["category"] = payload.category.value
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+    report = update_report(db, detection_id, user_id, updates)
+    if report is None:
+        raise HTTPException(status_code=404, detail="You have not reported this detection")
+    return report

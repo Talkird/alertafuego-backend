@@ -21,6 +21,13 @@ class ReportCreate(BaseModel):
     comment: str | None = None
 
 
+class ReportUpdate(BaseModel):
+    """Partial update for an existing report - fields left unset are unchanged."""
+
+    category: ReportCategory | None = None
+    comment: str | None = None
+
+
 class ReportResponse(BaseModel):
     id: int
     detection_id: int
