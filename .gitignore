@@ -5,3 +5,11 @@ __pycache__/
 model/dataset/
 model/checkpoints/
 model/*.zip
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+terraform/backend.hcl
+crash.log

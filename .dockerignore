@@ -1,0 +1,12 @@
+.git
+.github
+terraform
+.venv
+venv
+.env
+**/__pycache__
+*.pyc
+model/dataset
+model/scripts
+model/checkpoints/*.png
+model/checkpoints/*.csv

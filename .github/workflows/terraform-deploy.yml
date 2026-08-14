@@ -1,0 +1,99 @@
+name: Terraform Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "model/data_pipeline/**"
+      - "model/inference/**"
+      - "model/training/**"
+      - "model/__init__.py"
+      - "Dockerfile"
+      - "requirements-lambda.txt"
+      - "terraform/**"
+      - ".github/workflows/terraform-deploy.yml"
+  workflow_dispatch: {}
+
+# Prerequisite: terraform/bootstrap has been applied once, manually, with admin AWS
+# credentials (see terraform/README.md). This workflow only ever assumes the
+# limited-privilege role that bootstrap created.
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: terraform-deploy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+  TF_VAR_frontend_origins: ${{ vars.FRONTEND_ORIGINS }}
+  TF_VAR_earth_engine_project_id: ${{ vars.EARTH_ENGINE_PROJECT_ID }}
+  TF_VAR_database_url: ${{ secrets.DATABASE_URL }}
+  TF_VAR_supabase_url: ${{ secrets.SUPABASE_URL }}
+  TF_VAR_ee_service_account_key: ${{ secrets.EE_SERVICE_ACCOUNT_KEY }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Terraform init
+        working-directory: terraform
+        run: |
+          terraform init -input=false \
+            -backend-config="bucket=${{ vars.TFSTATE_BUCKET }}" \
+            -backend-config="dynamodb_table=${{ vars.TFLOCK_TABLE }}" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="key=backend.tfstate"
+
+      # Chicken-and-egg: the Lambda function (applied below) references an image
+      # tag that must already exist in ECR, and the checkpoint download below needs
+      # the artifacts bucket. Create just those first.
+      - name: Terraform apply (ECR repo + artifacts bucket only)
+        working-directory: terraform
+        run: |
+          terraform apply -auto-approve -input=false \
+            -target=aws_ecr_repository.app \
+            -target=aws_s3_bucket.model_artifacts \
+            -target=aws_s3_bucket_versioning.model_artifacts \
+            -target=aws_s3_bucket_server_side_encryption_configuration.model_artifacts \
+            -target=aws_s3_bucket_public_access_block.model_artifacts
+
+      - name: Download model checkpoint
+        working-directory: terraform
+        run: |
+          bucket=$(terraform output -raw model_artifacts_bucket)
+          mkdir -p ../model/checkpoints
+          aws s3 cp "s3://$bucket/model_best.pt" ../model/checkpoints/model_best.pt
+          aws s3 cp "s3://$bucket/norm_stats.json" ../model/checkpoints/norm_stats.json
+
+      - name: Build and push image
+        working-directory: terraform
+        run: |
+          repo=$(terraform output -raw ecr_repository_url)
+          aws ecr get-login-password --region "${{ env.AWS_REGION }}" | docker login --username AWS --password-stdin "${repo%%/*}"
+          docker build -t "$repo:${{ github.sha }}" -t "$repo:latest" ..
+          docker push "$repo:${{ github.sha }}"
+          docker push "$repo:latest"
+
+      - name: Terraform apply
+        working-directory: terraform
+        run: |
+          terraform apply -auto-approve -input=false -var="image_tag=${{ github.sha }}"
+
+      - name: Show function URL
+        working-directory: terraform
+        run: terraform output -raw function_url
