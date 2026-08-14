@@ -1,0 +1,17 @@
+# Dependencies for the AWS Lambda container image (backend inference API only).
+# Differs from requirements.txt: CPU-only torch (no CUDA runtime on Lambda),
+# no matplotlib (training-only), adds boto3 (Secrets Manager access).
+earthengine-api
+python-dotenv
+numpy
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.13.0+cpu
+fastapi==0.139.2
+uvicorn[standard]==0.51.0
+sqlalchemy>=2.0
+psycopg[binary]>=3.1
+geoalchemy2
+alembic
+shapely
+PyJWT
+boto3
