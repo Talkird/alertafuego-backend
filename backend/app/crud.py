@@ -89,6 +89,16 @@ def create_report(
     return report
 
 
+def get_own_report(session: Session, detection_id: int, user_id: UUID) -> FalsePositiveReport | None:
+    """This user's own report for this detection, or None if they haven't reported it."""
+    return session.scalar(
+        select(FalsePositiveReport).where(
+            FalsePositiveReport.detection_id == detection_id,
+            FalsePositiveReport.user_id == user_id,
+        )
+    )
+
+
 def update_report(
     session: Session,
     detection_id: int,
@@ -97,12 +107,7 @@ def update_report(
 ) -> FalsePositiveReport | None:
     """Apply a partial update (category and/or comment) to this user's existing
     report for this detection. Returns None if they haven't reported it yet."""
-    report = session.scalar(
-        select(FalsePositiveReport).where(
-            FalsePositiveReport.detection_id == detection_id,
-            FalsePositiveReport.user_id == user_id,
-        )
-    )
+    report = get_own_report(session, detection_id, user_id)
     if report is None:
         return None
     for field, value in updates.items():
