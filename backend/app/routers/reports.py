@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from backend.app.auth import get_current_user
-from backend.app.crud import create_report, list_reports, update_report
+from backend.app.crud import create_report, get_own_report, list_reports, update_report
 from backend.app.db import get_db
 from backend.app.models import Detection
 from backend.app.schemas import ReportCreate, ReportPublic, ReportResponse, ReportUpdate
@@ -22,6 +22,20 @@ def get_reports(detection_id: int, db: Session = Depends(get_db)) -> list[Report
     if db.get(Detection, detection_id) is None:
         raise HTTPException(status_code=404, detail="Detection not found")
     return list_reports(db, detection_id)
+
+
+@router.get("/{detection_id}/reports/mine", response_model=ReportPublic)
+def get_my_report(
+    detection_id: int,
+    user_id: UUID = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ReportPublic:
+    if db.get(Detection, detection_id) is None:
+        raise HTTPException(status_code=404, detail="Detection not found")
+    report = get_own_report(db, detection_id, user_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="You have not reported this detection")
+    return report
 
 
 @router.post("/{detection_id}/reports", response_model=ReportResponse, status_code=201)

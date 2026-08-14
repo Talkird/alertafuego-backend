@@ -2,7 +2,7 @@
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 import torch
 from shapely.geometry.base import BaseGeometry
@@ -54,7 +54,7 @@ def load_context(cfg: InferenceConfig | None = None) -> InferenceContext:
 def run_detection(ctx: InferenceContext, bbox: BBox, threshold: float) -> DetectionResult:
     goes_image = get_latest_goes_image()
     image_time_millis = goes_image.get("system:time_start").getInfo()
-    image_time = datetime.fromtimestamp(image_time_millis / 1000)
+    image_time = datetime.fromtimestamp(image_time_millis / 1000, tz=timezone.utc).replace(tzinfo=None)
 
     chunks = fetch_calibrated_chunks(goes_image, bbox, ctx.cfg.chunk_size_px)
     raster = assemble_raster(chunks, bbox)
