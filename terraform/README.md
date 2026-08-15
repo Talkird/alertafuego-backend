@@ -47,7 +47,7 @@ Note the outputs — you'll need them below:
 | `TFSTATE_BUCKET` | bootstrap output `tfstate_bucket` |
 | `TFLOCK_TABLE` | bootstrap output `tflock_table` |
 | `EARTH_ENGINE_PROJECT_ID` | your GEE cloud project id |
-| `FRONTEND_ORIGINS` | JSON array, e.g. `["https://your-frontend.example"]` |
+| `FRONTEND_ORIGINS` | comma-separated, e.g. `https://your-frontend.example` (no brackets/quotes) |
 
 **Settings → Secrets and variables → Actions → Secrets** (sensitive):
 | Name | Value |

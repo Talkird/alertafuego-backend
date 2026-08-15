@@ -29,9 +29,9 @@ variable "lambda_timeout" {
 }
 
 variable "frontend_origins" {
-  description = "Allowed CORS origins, mirrors the app's FRONTEND_ORIGINS env var."
-  type        = list(string)
-  default     = ["http://localhost:3000"]
+  description = "Comma-separated allowed CORS origins (e.g. \"https://a.example,https://b.example\"), mirrors the app's FRONTEND_ORIGINS env var. Plain string, not a list, so it can be passed via TF_VAR_frontend_origins without needing HCL/JSON quoting."
+  type        = string
+  default     = "http://localhost:3000"
 }
 
 variable "database_url" {
