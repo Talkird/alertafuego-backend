@@ -18,7 +18,7 @@ resource "aws_lambda_function" "backend" {
       SUPABASE_URL                  = var.supabase_url
       EARTH_ENGINE_PROJECT_ID       = var.earth_engine_project_id
       EE_SERVICE_ACCOUNT_SECRET_ARN = aws_secretsmanager_secret.ee_service_account.arn
-      FRONTEND_ORIGINS              = join(",", var.frontend_origins)
+      FRONTEND_ORIGINS              = var.frontend_origins
     }
   }
 
@@ -30,7 +30,7 @@ resource "aws_lambda_function_url" "backend" {
   authorization_type = "NONE"
 
   cors {
-    allow_origins = var.frontend_origins
+    allow_origins = split(",", var.frontend_origins)
     allow_methods = ["*"]
     allow_headers = ["*"]
     max_age       = 300
