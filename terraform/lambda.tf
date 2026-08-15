@@ -38,11 +38,34 @@ resource "aws_lambda_function_url" "backend" {
 }
 
 # Function URLs with authorization_type = NONE still require an explicit resource
-# policy allowing unauthenticated invocation.
+# policy allowing unauthenticated invocation. As of Oct 2025, AWS requires both of
+# these grants - InvokeFunctionUrl alone gets a silent 403 before the function runs.
 resource "aws_lambda_permission" "public_function_url" {
   statement_id           = "AllowPublicFunctionUrlInvoke"
   action                 = "lambda:InvokeFunctionUrl"
   function_name          = aws_lambda_function.backend.function_name
   principal              = "*"
   function_url_auth_type = "NONE"
+}
+
+# The second required grant (see comment above) needs the invoked_via_function_url
+# argument on aws_lambda_permission, which isn't in the provider version pinned here
+# yet (added upstream after 5.100.0). Shelling out to the same AddPermission API the
+# resource would otherwise call avoids forcing a major provider-version bump just for
+# this; `|| true` makes it a no-op once the statement already exists.
+resource "terraform_data" "public_function_invoke" {
+  triggers_replace = [aws_lambda_function.backend.function_name]
+
+  provisioner "local-exec" {
+    command = <<-EOT
+      aws lambda add-permission \
+        --function-name ${aws_lambda_function.backend.function_name} \
+        --statement-id AllowPublicFunctionInvoke \
+        --action lambda:InvokeFunction \
+        --principal '*' \
+        --invoked-via-function-url \
+        --region ${var.aws_region} \
+        || true
+    EOT
+  }
 }
