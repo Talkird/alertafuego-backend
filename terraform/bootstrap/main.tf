@@ -182,7 +182,7 @@ data "aws_iam_policy_document" "github_actions_deploy" {
     effect = "Allow"
     actions = [
       "logs:CreateLogGroup", "logs:DeleteLogGroup",
-      "logs:PutRetentionPolicy", "logs:TagResource",
+      "logs:PutRetentionPolicy", "logs:TagResource", "logs:ListTagsForResource",
     ]
     resources = ["arn:aws:logs:*:${data.aws_caller_identity.current.account_id}:log-group:/aws/lambda/${var.project_name}-*"]
   }
