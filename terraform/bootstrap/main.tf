@@ -87,8 +87,10 @@ resource "aws_iam_openid_connect_provider" "github" {
 
 data "aws_iam_policy_document" "github_actions_trust" {
   statement {
-    effect  = "Allow"
-    actions = ["sts:AssumeRoleWithWebIdentity"]
+    effect = "Allow"
+    # TagSession is required because aws-actions/configure-aws-credentials tags the
+    # assumed session by default (repo/workflow/actor claims) unless explicitly disabled.
+    actions = ["sts:AssumeRoleWithWebIdentity", "sts:TagSession"]
 
     principals {
       type        = "Federated"
@@ -104,7 +106,10 @@ data "aws_iam_policy_document" "github_actions_trust" {
     condition {
       test     = "StringLike"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repo}:ref:refs/heads/${var.github_branch}"]
+      # GitHub's sub claim suffixes the org/repo with stable numeric IDs
+      # (e.g. "repo:org@123/repo@456:ref:..."), so match with a trailing
+      # wildcard on each segment rather than an exact "org/repo" string.
+      values = ["repo:${split("/", var.github_repo)[0]}*/${split("/", var.github_repo)[1]}*:ref:refs/heads/${var.github_branch}"]
     }
   }
 }
