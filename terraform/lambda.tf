@@ -25,16 +25,13 @@ resource "aws_lambda_function" "backend" {
   depends_on = [aws_cloudwatch_log_group.backend]
 }
 
+# No `cors` block here on purpose: the app's own CORSMiddleware (main.py, driven by
+# the same FRONTEND_ORIGINS) already sets Access-Control-Allow-Origin. Configuring
+# CORS at both this layer and the app layer means every response carries two
+# Access-Control-Allow-Origin headers, which browsers reject outright.
 resource "aws_lambda_function_url" "backend" {
   function_name      = aws_lambda_function.backend.function_name
   authorization_type = "NONE"
-
-  cors {
-    allow_origins = split(",", var.frontend_origins)
-    allow_methods = ["*"]
-    allow_headers = ["*"]
-    max_age       = 300
-  }
 }
 
 # Function URLs with authorization_type = NONE still require an explicit resource
