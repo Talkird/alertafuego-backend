@@ -3,6 +3,7 @@
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
 import torch
 from shapely.geometry.base import BaseGeometry
@@ -14,6 +15,7 @@ from model.inference.land_filter import filter_to_polygon, load_argentina_polygo
 from model.inference.predictor import load_model, predict_tiles
 from model.inference.raster_fetch import fetch_calibrated_chunks, get_latest_goes_image
 from model.inference.tiling import assemble_raster, pixel_to_latlon, tile_raster
+from model.inference.visualize import save_debug_image, save_true_color_image
 from model.training.normalization import BandStats, load_band_stats
 
 logger = logging.getLogger(__name__)
@@ -51,7 +53,9 @@ def load_context(cfg: InferenceConfig | None = None) -> InferenceContext:
     )
 
 
-def run_detection(ctx: InferenceContext, bbox: BBox, threshold: float) -> DetectionResult:
+def run_detection(
+    ctx: InferenceContext, bbox: BBox, threshold: float, debug_image_dir: Path | None = None
+) -> DetectionResult:
     goes_image = get_latest_goes_image()
     image_time_millis = goes_image.get("system:time_start").getInfo()
     image_time = datetime.fromtimestamp(image_time_millis / 1000, tz=timezone.utc).replace(tzinfo=None)
@@ -66,15 +70,21 @@ def run_detection(ctx: InferenceContext, bbox: BBox, threshold: float) -> Detect
     cropped_width = (width // ctx.cfg.patch_size_px) * ctx.cfg.patch_size_px
 
     detections: list[tuple[float, float, float]] = []
+    pixel_detections: list[tuple[int, int, float]] = []
     for (row_offset, col_offset), tile_probs in zip(offsets, probabilities):
         rows, cols = (tile_probs >= threshold).nonzero()
         for row, col in zip(rows, cols):
-            lat, lon = pixel_to_latlon(
-                row_offset + int(row), col_offset + int(col), bbox, (cropped_height, cropped_width)
-            )
-            detections.append((lat, lon, float(tile_probs[row, col])))
+            abs_row, abs_col = row_offset + int(row), col_offset + int(col)
+            probability = float(tile_probs[row, col])
+            lat, lon = pixel_to_latlon(abs_row, abs_col, bbox, (cropped_height, cropped_width))
+            detections.append((lat, lon, probability))
+            pixel_detections.append((abs_row, abs_col, probability))
 
     detections = filter_to_polygon(detections, ctx.argentina_polygon)
+
+    if debug_image_dir is not None:
+        save_debug_image(raster, pixel_detections, image_time, threshold, debug_image_dir)
+        save_true_color_image(raster, image_time, debug_image_dir)
 
     logger.info("Detection run: %d chunks, %d tiles, %d detections", len(chunks), len(tiles), len(detections))
     return DetectionResult(

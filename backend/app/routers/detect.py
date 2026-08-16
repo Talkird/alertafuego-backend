@@ -1,6 +1,10 @@
 """Detection endpoints: on-demand fetch-latest-image + run-model."""
 
+import os
+from pathlib import Path
+
 import ee
+from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
@@ -13,6 +17,14 @@ from model.inference.service import DetectionResult, InferenceContext, run_detec
 from model.training.config import default_config as default_training_config
 
 router = APIRouter(prefix="/detect")
+
+
+def _debug_image_dir() -> Path | None:
+    """Opt-in local PNG dump of each detection run, for visually sanity-checking
+    the model before it's presentable. Set DEBUG_IMAGE_DIR in .env to enable."""
+    load_dotenv()
+    raw = os.getenv("DEBUG_IMAGE_DIR")
+    return Path(raw) if raw else None
 
 
 def _to_response(result: DetectionResult) -> DetectionResponse:
@@ -31,7 +43,7 @@ def _to_response(result: DetectionResult) -> DetectionResponse:
 def _run(ctx: InferenceContext, bbox: BBox, db: Session) -> DetectionResponse:
     threshold = default_training_config().seg_threshold
     try:
-        result = run_detection(ctx, bbox, threshold)
+        result = run_detection(ctx, bbox, threshold, debug_image_dir=_debug_image_dir())
     except (ee.EEException, NoImageAvailableError) as exc:
         raise HTTPException(status_code=503, detail=f"Earth Engine unavailable: {exc}") from exc
     save_detections(db, result)
