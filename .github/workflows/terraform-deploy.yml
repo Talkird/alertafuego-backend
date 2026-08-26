@@ -89,6 +89,26 @@ jobs:
           docker push "$repo:${{ github.sha }}"
           docker push "$repo:latest"
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Deliberately not requirements-lambda.txt/requirements.txt here - alembic's
+      # env.py only imports backend.app.db/models, which don't need torch or
+      # earthengine-api. Installing just what schema migrations need keeps this
+      # step fast.
+      - name: Install migration dependencies
+        run: pip install alembic "sqlalchemy>=2.0" "psycopg[binary]>=3.1" geoalchemy2 python-dotenv
+
+      # Run right before the apply that flips the Lambda to the new image, so the
+      # window where old code (pre-migration schema) and new code (pre-migration
+      # schema too, until this runs) are out of step with the DB stays as short as
+      # possible.
+      - name: Run database migrations
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: alembic upgrade head
+
       - name: Terraform apply
         working-directory: terraform
         run: |

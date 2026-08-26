@@ -25,11 +25,10 @@ def load_argentina_polygon(bbox: BBox) -> BaseGeometry:
     return shape(geojson)
 
 
-def filter_to_polygon(
-    detections: list[tuple[float, float, float]], polygon: BaseGeometry
-) -> list[tuple[float, float, float]]:
-    """Keep only (lat, lon, probability) detections whose point falls within polygon."""
-    kept = [(lat, lon, prob) for lat, lon, prob in detections if polygon.contains(Point(lon, lat))]
+def filter_to_polygon(detections: list[tuple], polygon: BaseGeometry) -> list[tuple]:
+    """Keep only detections - (lat, lon, ...) tuples, any trailing fields passed
+    through unchanged - whose point falls within polygon."""
+    kept = [d for d in detections if polygon.contains(Point(d[1], d[0]))]
     dropped = len(detections) - len(kept)
     if dropped:
         logger.info("Dropped %d detection(s) outside Argentina's actual border", dropped)

@@ -3,12 +3,13 @@ side effects, fast. This is the endpoint a frontend should poll/query."""
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from geoalchemy2.shape import to_shape
 from sqlalchemy.orm import Session
 
-from backend.app.crud import list_detections
+from backend.app.crud import get_detection_image, list_detections
 from backend.app.db import get_db
+from backend.app.models import Detection
 from backend.app.schemas import BBoxSchema, StoredDetection
 
 router = APIRouter(prefix="/detections")
@@ -43,6 +44,17 @@ def get_detections(
             bbox=BBoxSchema(west=row.bbox_west, south=row.bbox_south, east=row.bbox_east, north=row.bbox_north),
             threshold=row.threshold,
             report_count=report_count,
+            has_image=has_image,
         )
-        for row, report_count in rows
+        for row, report_count, has_image in rows
     ]
+
+
+@router.get("/{detection_id}/image")
+def get_detection_image_route(detection_id: int, db: Session = Depends(get_db)) -> Response:
+    if db.get(Detection, detection_id) is None:
+        raise HTTPException(status_code=404, detail="Detection not found")
+    image = get_detection_image(db, detection_id)
+    if image is None:
+        raise HTTPException(status_code=404, detail="This detection has no stored image")
+    return Response(content=image, media_type="image/png")

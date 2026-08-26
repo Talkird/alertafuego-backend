@@ -5,6 +5,7 @@ __pycache__/
 model/dataset/
 model/checkpoints/
 model/*.zip
+debug_images/
 
 # Terraform
 **/.terraform/
