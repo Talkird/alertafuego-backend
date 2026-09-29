@@ -80,6 +80,19 @@ jobs:
           aws s3 cp "s3://$bucket/model_best.pt" ../model/checkpoints/model_best.pt
           aws s3 cp "s3://$bucket/norm_stats.json" ../model/checkpoints/norm_stats.json
 
+      # The Dockerfile copies the Lambda Web Adapter out of public.ecr.aws. Anonymous
+      # pulls from shared GitHub runner IPs sporadically hit a 429 "Data limit
+      # exceeded", so pre-pull with retries; the build then reuses the local image.
+      - name: Pre-pull Lambda Web Adapter image
+        run: |
+          image=$(grep -oE 'public\.ecr\.aws/[^ ]+' Dockerfile | head -1)
+          for attempt in 1 2 3 4 5; do
+            docker pull "$image" && exit 0
+            echo "Pull failed (attempt $attempt), retrying in $((attempt * 30))s..."
+            sleep $((attempt * 30))
+          done
+          exit 1
+
       - name: Build and push image
         working-directory: terraform
         run: |
