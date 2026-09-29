@@ -36,7 +36,7 @@ def _to_response(result: DetectionResult) -> DetectionResponse:
         threshold=result.threshold,
         chunk_count=result.chunk_count,
         detection_count=len(result.detections),
-        detections=[Detection(lat=lat, lon=lon, probability=prob) for lat, lon, prob in result.detections],
+        detections=[Detection(lat=lat, lon=lon, probability=prob) for lat, lon, prob, _ in result.detections],
     )
 
 
