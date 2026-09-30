@@ -139,10 +139,13 @@ def save_sample(sample: Sample, split: str, output_dir: Path, index: int) -> Pat
     return path
 
 
-def write_manifest(rows: list[dict], manifest_path: Path) -> None:
+def append_manifest(rows: list[dict], manifest_path: Path) -> None:
+    """Append rows to the manifest, writing the header first if the file is new."""
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = ["filename", "lat", "lon", "goes_time", "has_fire", "split"]
-    with manifest_path.open("w", newline="", encoding="utf-8") as f:
+    is_new = not manifest_path.exists()
+    with manifest_path.open("a", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
+        if is_new:
+            writer.writeheader()
         writer.writerows(rows)

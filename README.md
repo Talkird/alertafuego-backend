@@ -63,6 +63,13 @@ Genera `model/dataset/{train,val,test}/sample_XXXXXX.npz` (`patch` `(16,H,W)` fl
 muestras para pruebas rápidas. Rango largo de fechas se procesa internamente en chunks
 diarios (hay un tope de 5000 elementos por query de Earth Engine).
 
+Cada día se guarda en disco apenas termina y queda registrado en
+`completed_days.txt` dentro de `--output-dir`: si la exportación se corta, volver a
+correr el mismo comando retoma desde el día siguiente. Los errores de Earth Engine
+reintentan el día hasta 4 veces. Usar un `--output-dir` distinto por cada mes
+exportado (p. ej. `model/dataset/2025-04`) — el directorio por defecto contiene el
+dataset de septiembre 2025.
+
 ## Entrenamiento (fase 2)
 
 ```
