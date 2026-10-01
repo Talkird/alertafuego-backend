@@ -11,7 +11,7 @@ Example:
     python -m model.scripts.export_dataset \\
         --start-date 2024-01-15 --end-date 2024-01-22 \\
         --train-end-date 2024-01-19 --val-end-date 2024-01-20 \\
-        --limit 20
+        --output-dir model/dataset/2024-01 --limit 20
 """
 
 import argparse
@@ -51,6 +51,13 @@ CHUNK_DAYS = 1
 MAX_DAY_ATTEMPTS = 4
 RETRY_BASE_DELAY_SECONDS = 60
 
+#: Earth Engine requests have no timeout by default, so a single stalled HTTPS
+#: response can hang an export indefinitely (seen: 3+ hours on one open connection
+#: at 0% CPU). With a deadline, googleapiclient retries the call 5 times and then
+#: raises TimeoutError (an OSError), which the day-level retry above handles. Every
+#: Earth Engine call in this pipeline normally returns within seconds.
+EE_REQUEST_DEADLINE_MS = 2 * 60 * 1000
+
 PROGRESS_FILENAME = "completed_days.txt"
 MANIFEST_FILENAME = "manifest.csv"
 
@@ -75,7 +82,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--val-end-date", required=True, type=_parse_date)
     parser.add_argument("--patch-size", type=int, default=32)
     parser.add_argument("--negative-ratio", type=float, default=1.0)
-    parser.add_argument("--output-dir", type=Path, default=Path("model/dataset"))
+    # Required, one folder per export (e.g. model/dataset/2025-04): model/dataset
+    # itself holds the combined manifest written by merge_datasets.
+    parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--limit", type=int, default=None, help="Cap total sample count, for smoke tests.")
     return parser.parse_args()
 
@@ -148,6 +157,7 @@ def main() -> None:
     args = _parse_args()
 
     init_earth_engine()
+    ee.data.setDeadline(EE_REQUEST_DEADLINE_MS)
 
     cfg = replace(
         default_config(output_dir=args.output_dir),

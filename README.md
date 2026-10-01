@@ -55,20 +55,32 @@ captura GOES-19 más cercana en tiempo, extrae parches de 16 bandas calibradas.
 ```
 python -m model.scripts.export_dataset \
     --start-date 2025-09-01 --end-date 2025-10-01 \
-    --train-end-date 2025-09-24 --val-end-date 2025-09-27
+    --train-end-date 2025-09-24 --val-end-date 2025-09-27 \
+    --output-dir model/dataset/2025-09
 ```
 
-Genera `model/dataset/{train,val,test}/sample_XXXXXX.npz` (`patch` `(16,H,W)` float32,
-`mask` `(H,W)` uint8) + `model/dataset/manifest.csv`. `--limit N` acota la cantidad de
-muestras para pruebas rápidas. Rango largo de fechas se procesa internamente en chunks
-diarios (hay un tope de 5000 elementos por query de Earth Engine).
+Cada exportación (un mes) va en su propia carpeta: genera
+`<output-dir>/{train,val,test}/sample_XXXXXX.npz` (`patch` `(16,H,W)` float32, `mask`
+`(H,W)` uint8) + `<output-dir>/manifest.csv`. `--output-dir` es obligatorio. `--end-date`
+es exclusivo (primer día del mes siguiente). `--limit N` acota la cantidad de muestras
+para pruebas rápidas. Rango largo de fechas se procesa internamente en chunks diarios
+(hay un tope de 5000 elementos por query de Earth Engine).
 
 Cada día se guarda en disco apenas termina y queda registrado en
 `completed_days.txt` dentro de `--output-dir`: si la exportación se corta, volver a
-correr el mismo comando retoma desde el día siguiente. Los errores de Earth Engine
-reintentan el día hasta 4 veces. Usar un `--output-dir` distinto por cada mes
-exportado (p. ej. `model/dataset/2025-04`) — el directorio por defecto contiene el
-dataset de septiembre 2025.
+correr el mismo comando (mismas fechas y carpeta) retoma desde el día siguiente. Los
+errores de Earth Engine, de red y los requests colgados (timeout de 2 minutos)
+reintentan el día hasta 4 veces.
+
+Después de exportar un mes, combinar todos los meses en un único manifest para
+entrenar:
+
+```
+python -m model.scripts.merge_datasets
+```
+
+Escribe `model/dataset/manifest.csv` con todas las muestras de `model/dataset/*/`
+(sin copiar archivos). Cada mes conserva su propio split train/val/test.
 
 ## Entrenamiento (fase 2)
 
@@ -76,7 +88,8 @@ dataset de septiembre 2025.
 python -m model.scripts.train_model --epochs 30
 ```
 
-Args útiles: `--dataset-dir`, `--checkpoint-dir` (default `model/checkpoints`),
+Usa el manifest combinado (`model/dataset/manifest.csv`, ver `merge_datasets`
+arriba). Args útiles: `--dataset-dir`, `--checkpoint-dir` (default `model/checkpoints`),
 `--batch-size`, `--lr`, `--limit` (subset chico para smoke test). Corre en GPU si hay
 CUDA disponible (`torch.cuda.is_available()`), si no cae a CPU automáticamente. Guarda
 `model_best.pt`, `norm_stats.json`, `metrics.csv` y `training_curves.png` en
