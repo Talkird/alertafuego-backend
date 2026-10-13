@@ -12,3 +12,4 @@ geoalchemy2
 alembic
 shapely
 PyJWT
+boto3

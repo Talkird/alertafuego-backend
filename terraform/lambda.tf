@@ -19,6 +19,8 @@ resource "aws_lambda_function" "backend" {
       EARTH_ENGINE_PROJECT_ID       = var.earth_engine_project_id
       EE_SERVICE_ACCOUNT_SECRET_ARN = aws_secretsmanager_secret.ee_service_account.arn
       FRONTEND_ORIGINS              = var.frontend_origins
+      FRONTEND_URL                  = var.frontend_url
+      ALERT_EMAIL_FROM              = var.alert_email_from
     }
   }
 

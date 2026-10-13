@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
+from backend.app.alerts import process_new_detections
 from backend.app.crud import save_detections
 from backend.app.db import get_db
 from backend.app.schemas import BBoxSchema, Detection, DetectionResponse
@@ -46,7 +47,8 @@ def _run(ctx: InferenceContext, bbox: BBox, db: Session) -> DetectionResponse:
         result = run_detection(ctx, bbox, threshold, debug_image_dir=_debug_image_dir())
     except (ee.EEException, NoImageAvailableError) as exc:
         raise HTTPException(status_code=503, detail=f"Earth Engine unavailable: {exc}") from exc
-    save_detections(db, result)
+    detection_ids = save_detections(db, result)
+    process_new_detections(db, detection_ids)
     return _to_response(result)
 
 

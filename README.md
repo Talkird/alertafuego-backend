@@ -36,6 +36,9 @@ la guía operativa de "cómo correr esto hoy", no el historial de decisiones.
    EARTH_ENGINE_PROJECT_ID="tu-proyecto-de-gee"
    DATABASE_URL="postgresql+psycopg://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres"
    FRONTEND_ORIGINS="http://localhost:3000"
+   # Opcional, para emails de alertas (ver "Alertas por zona"):
+   ALERT_EMAIL_FROM="alertas@tu-dominio"
+   FRONTEND_URL="http://localhost:3000"
    ```
    `DATABASE_URL` es la conexión **directa** de Supabase (puerto `5432`), no el
    transaction pooler (puerto `6543`) — este backend es un proceso persistente, no
@@ -104,6 +107,36 @@ en Postgres**, y devuelven el mismo resultado en la respuesta HTTP (`image_time`
   detected_at, bbox, threshold}` — **este es el endpoint que debería usar el
   frontend** para el mapa y la tabla de logs, no `/detect/*` (esos disparan un scan
   en vivo con efecto secundario, no son para lectura rutinaria).
+
+### Alertas por zona
+
+Un usuario autenticado define zonas de alerta (punto + radio en km, hasta 200, y una
+probabilidad mínima, default 0.65). Después de cada corrida de `/detect/*`, las
+detecciones nuevas dentro de una zona activa generan una alerta y un email al dueño.
+Un mismo foco no vuelve a alertar a la misma zona si ya hubo una alerta a menos de
+5 km en las 6 horas anteriores (por `image_time`).
+
+- `GET/POST /alert-areas`, `PATCH/DELETE /alert-areas/{id}` — zonas del usuario.
+- `GET /alerts` — historial de alertas del usuario, cada una con su detección.
+
+Los emails salen por Amazon SES desde `ALERT_EMAIL_FROM` y enlazan a
+`FRONTEND_URL/alertas`. Sin `ALERT_EMAIL_FROM` en `.env` no se envían (se loguea un
+warning) pero las alertas se registran igual. Configuración de SES en
+`terraform/README.md`, paso 5.
+
+### Estadísticas
+
+- `GET /stats/regions?kind=province|department` — detecciones por provincia o
+  departamento.
+- `GET /stats/hourly` — detecciones por hora del día (hora argentina).
+- `GET /stats/reports` — reportes de usuarios por veredicto y categoría.
+
+Todas aceptan `since`/`until`. `/stats/regions` necesita los límites del IGN cargados
+en la tabla `regions` (una vez por base de datos, re-correrlo los reemplaza):
+
+```
+python -m backend.scripts.load_regions
+```
 
 Docs interactivas en `/docs`. Ver esquema de la tabla `detections` y por qué se
 modeló así en `docs/DECISIONS.md` (entradas de persistencia, fase 4).

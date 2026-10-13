@@ -57,3 +57,15 @@ variable "ee_service_account_key" {
   sensitive   = true
   default     = ""
 }
+
+variable "frontend_url" {
+  description = "Public URL of the frontend, linked from alert emails (e.g. \"https://your-frontend.example\")."
+  type        = string
+  default     = ""
+}
+
+variable "alert_email_from" {
+  description = "Sender address for alert emails. Must be a verified identity in Amazon SES (see README). Leave empty to disable alert emails - alerts are still recorded and shown in the app."
+  type        = string
+  default     = ""
+}

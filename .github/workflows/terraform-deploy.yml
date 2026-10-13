@@ -30,6 +30,8 @@ env:
   AWS_REGION: ${{ vars.AWS_REGION }}
   TF_VAR_aws_region: ${{ vars.AWS_REGION }}
   TF_VAR_frontend_origins: ${{ vars.FRONTEND_ORIGINS }}
+  TF_VAR_frontend_url: ${{ vars.FRONTEND_URL }}
+  TF_VAR_alert_email_from: ${{ vars.ALERT_EMAIL_FROM }}
   TF_VAR_earth_engine_project_id: ${{ vars.EARTH_ENGINE_PROJECT_ID }}
   TF_VAR_database_url: ${{ secrets.DATABASE_URL }}
   TF_VAR_supabase_url: ${{ secrets.SUPABASE_URL }}
