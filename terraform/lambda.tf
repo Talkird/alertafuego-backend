@@ -15,6 +15,7 @@ resource "aws_lambda_function" "backend" {
   environment {
     variables = {
       DATABASE_URL                  = var.database_url
+      DETECT_API_KEY                = var.detect_api_key
       SUPABASE_URL                  = var.supabase_url
       EARTH_ENGINE_PROJECT_ID       = var.earth_engine_project_id
       EE_SERVICE_ACCOUNT_SECRET_ARN = aws_secretsmanager_secret.ee_service_account.arn

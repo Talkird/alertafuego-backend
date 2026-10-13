@@ -40,6 +40,12 @@ variable "database_url" {
   sensitive   = true
 }
 
+variable "detect_api_key" {
+  description = "Secret required in the X-API-Key header to run detections (POST /detect/*). Without it those endpoints answer 503."
+  type        = string
+  sensitive   = true
+}
+
 variable "supabase_url" {
   description = "Supabase project URL (used to fetch the JWKS for auth)."
   type        = string

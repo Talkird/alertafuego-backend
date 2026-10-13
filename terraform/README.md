@@ -57,6 +57,7 @@ Note the outputs — you'll need them below:
 |---|---|
 | `AWS_DEPLOY_ROLE_ARN` | bootstrap output `github_actions_deploy_role_arn` |
 | `DATABASE_URL` | Supabase Postgres connection string |
+| `DETECT_API_KEY` | any random string, e.g. `openssl rand -hex 32`. Required in the `X-API-Key` header to run detections (`POST /detect/*`) |
 | `SUPABASE_URL` | Supabase project URL |
 | `TELEGRAM_BOT_TOKEN` | the bot's token from @BotFather (see step 6) |
 | `TELEGRAM_WEBHOOK_SECRET` | any random string, e.g. `openssl rand -hex 32` (see step 6) |

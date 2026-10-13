@@ -36,6 +36,8 @@ la guía operativa de "cómo correr esto hoy", no el historial de decisiones.
    EARTH_ENGINE_PROJECT_ID="tu-proyecto-de-gee"
    DATABASE_URL="postgresql+psycopg://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres"
    FRONTEND_ORIGINS="http://localhost:3000"
+   # Clave para correr detecciones (POST /detect/*), ej. `openssl rand -hex 32`:
+   DETECT_API_KEY="una-clave-larga-y-aleatoria"
    # Opcional, para emails de alertas (ver "Alertas por zona"):
    ALERT_EMAIL_FROM="alertas@tu-dominio"
    FRONTEND_URL="http://localhost:3000"
@@ -103,6 +105,14 @@ Ambos: buscan la imagen GOES-19 más reciente, corren el modelo (filtrando resul
 al polígono real de Argentina, no al rectángulo del bbox), **guardan las detecciones
 en Postgres**, y devuelven el mismo resultado en la respuesta HTTP (`image_time`,
 `bbox`, `threshold`, `chunk_count`, `detections: [{lat, lon, probability}]`).
+
+Piden la clave de `DETECT_API_KEY` en el header `X-API-Key` (401 sin ella, 503 si el
+backend no la tiene configurada): cada corrida gasta Lambda y cuota de Earth Engine,
+escribe en la base y puede disparar alertas. En `/docs`, cargarla con **Authorize**.
+
+```
+curl -X POST -H "X-API-Key: $DETECT_API_KEY" <URL backend>/detect/argentina
+```
 
 - `GET /detections` — lectura pura sobre lo ya guardado, sin llamar a Earth Engine,
   rápido. Filtros opcionales por query params: `west/south/east/north` (bbox),
