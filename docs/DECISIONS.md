@@ -160,3 +160,42 @@
 **Alternatives considered:** Reuse `DetectionResponse` (the action-endpoint response shape) for reads too.
 **Rationale:** A dedicated `StoredDetection` schema matches what the user explicitly described wanting in the frontend (a logs table "siguiendo el schema de la base de datos") - `DetectionResponse` is shaped around one live scan (`image_time`/`bbox`/`threshold` once, `detections` list nested inside), whereas reads need each row's own `id`/`image_time`/`bbox`/`threshold`/`detected_at` independently, since rows come from many different past scans.
 **Consequences:** This is the endpoint the frontend should actually build against for the map and logs table - the `/detect/*` endpoints remain for triggering a fresh scan (e.g. a manual "refresh now" button or a future scheduled job), not for routine reads. No pagination beyond `limit`/`since`/`until` (no cursor/offset) - fine at current data volume, revisit if the table grows large.
+
+### [2026-10-12] — Region alerts: point + radius areas, checked after each detection run, emailed through SES
+
+**Context:** Users should be able to pick an area and be told when a fire appears there. Detection runs only happen on demand (`POST /detect/*`, ~1 minute for all of Argentina). There's no scheduler, and adding one was deferred.
+**Decision:** `alert_areas` stores a per-user circle (Geography `POINT` center + `radius_km` up to 200 + `min_probability`, default 0.65). Right after `save_detections()`, `backend/app/alerts.py` matches the new rows with `ST_DWithin`, records each match in `alert_notifications`, and sends the area's owner one plain-text email per area per run through Amazon SES (`ALERT_EMAIL_FROM`). The owner's email is copied from the JWT `email` claim on create and edit.
+**Alternatives considered:**
+- Free-drawn polygons or administrative regions (provinces and departments) as alert areas.
+- A queue or separate worker for matching and sending.
+- Resend or another email API instead of SES, or WhatsApp or Telegram.
+- Looking up the user's email through the Supabase admin API at send time.
+**Rationale:**
+- Point + radius is the simplest UX ("my farm, 25 km") and maps directly onto `ST_DWithin` on Geography, in meters.
+- Matching is one indexed query over a single run's detections, so a queue would add infrastructure without a need.
+- SES fits the existing AWS deploy, and the Lambda role only needs `ses:SendEmail`. WhatsApp may come later.
+- Copying the email from the JWT avoids giving the backend a Supabase service key.
+- The 0.65 default sits above the model's 0.5 detection threshold. At test F1 = 0.33, false alarms are the main risk to alerts being trusted.
+**Consequences:**
+- Alerts fire only when someone triggers a run, until scheduled detection exists. Once a scheduler calls `/detect/argentina`, alerts work with no further changes.
+- Cooldown: a detection doesn't alert an area again if that area already alerted within 5 km and 6 h (by `image_time`), and neighbouring pixels in one run collapse into one alert. A long-burning fire re-alerts every 6 h.
+- Email failures are logged and leave `emailed_at` null. They never fail the detection run. Without `ALERT_EMAIL_FROM`, alerts are recorded but not emailed.
+- SES starts in sandbox mode (only verified recipients, 200 emails a day). Production access must be requested before real users sign up (`terraform/README.md`, step 5). The sender is verified by hand because the CI deploy role has no SES permissions.
+- Observed while testing: almost all stored detections sit at the same position inside their 32-px inference tile (rows 15–16, columns 18–23). That suggests a positional bias in the model, possibly from training patches centered on the VIIRS fire. If so, reported locations can be tens of km off, which matters for small alert radii. Not addressed here.
+
+### [2026-10-12] — Load IGN provinces and departments into a `regions` table for per-region stats
+
+**Context:** The dashboard needed detections per province and department, and nothing in the database knew Argentina's administrative boundaries.
+**Decision:** `python -m backend.scripts.load_regions` downloads IGN's WFS layers `ign:provincia` (24) and `ign:departamento` (529), simplifies them to ~100 m, and replaces the `regions` table. `GET /stats/regions` joins detections with `ST_Contains`. `GET /stats/hourly` (Argentina time, UTC-3) and `GET /stats/reports` were added alongside it.
+**Alternatives considered:**
+- Commit the GeoJSON (~250 MB raw) to the repo.
+- Reverse-geocode each detection at insert time into province and department columns.
+- Compute the stats in the frontend from `GET /detections`.
+**Rationale:**
+- IGN is the official source, and the same IGN tiles are already used for the basemap.
+- Simplifying to ~100 m is far below the ~2 km GOES pixel, and keeps the table small.
+- Joining at query time means re-loading boundaries never requires backfilling detections.
+- Stats in the frontend would be capped by `/detections`' row limit (default 500).
+**Consequences:**
+- The loader has to be run once per database. It has been run on the Supabase DB.
+- Detections outside every region (offshore) are not counted in `/stats/regions`.
