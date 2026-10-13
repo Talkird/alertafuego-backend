@@ -29,7 +29,13 @@ def _decode(credentials: HTTPAuthorizationCredentials) -> dict:
     try:
         signing_key = _get_jwks_client().get_signing_key_from_jwt(token)
         return jwt.decode(token, signing_key.key, algorithms=["ES256", "RS256"], audience="authenticated")
-    except jwt.InvalidTokenError as exc:
+    except jwt.PyJWKClientConnectionError as exc:
+        # Couldn't reach Supabase's JWKS: our problem, not the token's. A 401 here
+        # would log every user out during a Supabase outage.
+        raise HTTPException(status_code=503, detail="Auth key server unavailable") from exc
+    except (jwt.InvalidTokenError, jwt.PyJWKClientError) as exc:
+        # PyJWKClientError: no signing key matches the token's kid (forged, or
+        # signed with a rotated-out key). Was an unhandled 500.
         raise HTTPException(status_code=401, detail=f"Invalid token: {exc}") from exc
 
 
