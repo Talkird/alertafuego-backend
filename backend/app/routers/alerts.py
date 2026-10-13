@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from backend.app.auth import UserWithEmail, get_current_user, get_current_user_with_email
 from backend.app.crud import (
+    alert_emails_by_user,
     create_alert_area,
     delete_alert_area,
     get_own_alert_area,
@@ -27,12 +28,14 @@ router = APIRouter()
 MAX_ALERTS_LIMIT = 500
 
 
-def _to_response(area: AlertArea) -> AlertAreaResponse:
+def _to_response(area: AlertArea, alert_email: str | None) -> AlertAreaResponse:
+    """`email` is where the area's alerts go: the owner's confirmed alternate
+    address (`alert_email`) if they set one, else their account's."""
     point = to_shape(area.center)
     return AlertAreaResponse(
         id=area.id,
         name=area.name,
-        email=area.email,
+        email=alert_email or area.email,
         lat=point.y,
         lon=point.x,
         radius_km=area.radius_km,
@@ -51,7 +54,9 @@ def _own_area(db: Session, area_id: int, user_id: UUID) -> AlertArea:
 
 @router.get("/alert-areas", response_model=list[AlertAreaResponse])
 def get_alert_areas(user_id: UUID = Depends(get_current_user), db: Session = Depends(get_db)) -> list[AlertAreaResponse]:
-    return [_to_response(area) for area in list_alert_areas(db, user_id)]
+    areas = list_alert_areas(db, user_id)
+    alert_email = alert_emails_by_user(db, {user_id}).get(user_id)
+    return [_to_response(area, alert_email) for area in areas]
 
 
 @router.post("/alert-areas", response_model=AlertAreaResponse, status_code=201)
@@ -61,7 +66,7 @@ def post_alert_area(
     db: Session = Depends(get_db),
 ) -> AlertAreaResponse:
     area = create_alert_area(db, user.id, user.email, **payload.model_dump())
-    return _to_response(area)
+    return _to_response(area, alert_emails_by_user(db, {user.id}).get(user.id))
 
 
 @router.patch("/alert-areas/{area_id}", response_model=AlertAreaResponse)
@@ -77,7 +82,7 @@ def patch_alert_area(
     if any(updates.get(field) is None for field in updates):
         raise HTTPException(status_code=400, detail="Fields can't be set to null")
     area = update_alert_area(db, _own_area(db, area_id, user.id), user.email, updates)
-    return _to_response(area)
+    return _to_response(area, alert_emails_by_user(db, {user.id}).get(user.id))
 
 
 @router.delete("/alert-areas/{area_id}", status_code=204)

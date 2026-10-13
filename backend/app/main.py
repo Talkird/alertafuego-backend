@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app.routers import alerts, detect, detections, reports, stats
+from backend.app.routers import account, alerts, detect, detections, reports, stats
 from model.inference.service import load_context
 
 
@@ -32,6 +32,7 @@ app.include_router(detections.router)
 app.include_router(reports.router)
 app.include_router(alerts.router)
 app.include_router(stats.router)
+app.include_router(account.router)
 
 
 @app.get("/")

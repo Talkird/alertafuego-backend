@@ -199,3 +199,22 @@
 **Consequences:**
 - The loader has to be run once per database. It has been run on the Supabase DB.
 - Detections outside every region (offshore) are not counted in `/stats/regions`.
+
+### [2026-10-13] — Let users send alerts to a confirmed alternate email, stored in a user_settings table
+
+**Context:** Users asked for an account page where alerts can go to an email other than their login's. Each `alert_areas` row copies the account email from the JWT, and there was nowhere to keep per-user settings.
+**Decision:** A `user_settings` table (one row per user) holds a confirmed `alert_email`, a pending address with the SHA-256 of a 24-hour confirmation token, and the default radius and minimum probability for new zones. `/account` endpoints manage it. Alert dispatch and `GET /alert-areas` use the confirmed address when there is one, else the area's account email.
+**Alternatives considered:**
+- Let users type any address without confirmation.
+- Store the alternate address on each alert area.
+- Ask for a phone number now, for later WhatsApp or SMS alerts.
+**Rationale:**
+- Without confirmation, anyone could point alert emails at someone else's inbox.
+- One address per user keeps zones consistent; per-zone addresses weren't requested.
+- No channel uses a phone number yet: a Telegram bot can only message a chat after the user presses Start, and WhatsApp/SMS cost money per message. Collecting it would be personal data with no use.
+- Only the token hash is stored, so a database leak doesn't expose working links.
+**Consequences:**
+- While SES is in sandbox mode, confirmation and alert emails only reach SES-verified addresses.
+- Without `ALERT_EMAIL_FROM` (local runs), the confirmation link is logged instead of emailed.
+- Account deletion is not implemented: removing the Supabase `auth.users` row needs the service-role key or a privilege the backend doesn't use yet.
+- Telegram, when added, gets its chat id in the same table.

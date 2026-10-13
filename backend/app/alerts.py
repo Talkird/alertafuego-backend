@@ -1,5 +1,6 @@
 """Region alerts: after a detection run is saved, find the new detections that fall
-inside users' alert areas, record them as alerts and email each area's owner."""
+inside users' alert areas, record them as alerts and email each area's owner (at
+their confirmed alternate address, if they set one)."""
 
 import math
 from datetime import datetime, timedelta, timezone
@@ -8,6 +9,7 @@ from geoalchemy2.shape import to_shape
 from sqlalchemy import exists, func, insert, select
 from sqlalchemy.orm import Session, aliased
 
+from backend.app.crud import alert_emails_by_user
 from backend.app.mailer import AlertedDetection, send_alert_email
 from backend.app.models import AlertArea, AlertNotification, Detection
 
@@ -79,12 +81,14 @@ def process_new_detections(session: Session, detection_ids: list[int]) -> int:
         ):
             kept.append((detection, latlon))
 
+    alert_emails = alert_emails_by_user(session, {area.user_id for area, _ in by_area.values()})
     for area, kept in by_area.values():
+        to = alert_emails.get(area.user_id, area.email)
         alerted = [
             AlertedDetection(lat=lat, lon=lon, probability=d.probability, image_time=d.image_time)
             for d, (lat, lon) in kept
         ]
-        emailed_at = datetime.now(timezone.utc).replace(tzinfo=None) if send_alert_email(area.email, area.name, alerted) else None
+        emailed_at = datetime.now(timezone.utc).replace(tzinfo=None) if send_alert_email(to, area.name, alerted) else None
         session.execute(
             insert(AlertNotification),
             [{"area_id": area.id, "detection_id": d.id, "emailed_at": emailed_at} for d, _ in kept],

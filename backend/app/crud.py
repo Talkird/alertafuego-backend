@@ -16,6 +16,7 @@ from backend.app.models import (
     RegionKind,
     ReportCategory,
     ReportVerdict,
+    UserSettings,
 )
 from model.inference.service import DetectionResult
 
@@ -217,6 +218,90 @@ def list_alerts(session: Session, user_id: UUID, limit: int) -> list[tuple[Alert
         .limit(limit)
     )
     return [tuple(row) for row in session.execute(query)]
+
+
+def get_user_settings(session: Session, user_id: UUID) -> UserSettings | None:
+    return session.get(UserSettings, user_id)
+
+
+def _get_or_create_user_settings(session: Session, user_id: UUID) -> UserSettings:
+    settings = session.get(UserSettings, user_id)
+    if settings is None:
+        settings = UserSettings(user_id=user_id)
+        session.add(settings)
+    return settings
+
+
+def update_user_settings(session: Session, user_id: UUID, updates: dict) -> UserSettings:
+    settings = _get_or_create_user_settings(session, user_id)
+    for field, value in updates.items():
+        setattr(settings, field, value)
+    session.commit()
+    session.refresh(settings)
+    return settings
+
+
+def set_pending_alert_email(
+    session: Session, user_id: UUID, email: str, token_hash: str, expires_at: datetime
+) -> UserSettings:
+    """Store an address waiting for confirmation. Replaces any earlier pending one
+    (its link stops working); the current alert address keeps working meanwhile."""
+    settings = _get_or_create_user_settings(session, user_id)
+    settings.pending_email = email
+    settings.pending_token_hash = token_hash
+    settings.pending_expires_at = expires_at
+    session.commit()
+    session.refresh(settings)
+    return settings
+
+
+def reset_alert_email(session: Session, user_id: UUID) -> UserSettings:
+    """Back to the account's address: drop the alternate one and any pending one."""
+    settings = _get_or_create_user_settings(session, user_id)
+    settings.alert_email = None
+    settings.pending_email = None
+    settings.pending_token_hash = None
+    settings.pending_expires_at = None
+    session.commit()
+    session.refresh(settings)
+    return settings
+
+
+def cancel_pending_alert_email(session: Session, user_id: UUID) -> UserSettings:
+    """Drop the address waiting for confirmation; the current alert address stays."""
+    settings = _get_or_create_user_settings(session, user_id)
+    settings.pending_email = None
+    settings.pending_token_hash = None
+    settings.pending_expires_at = None
+    session.commit()
+    session.refresh(settings)
+    return settings
+
+
+def confirm_alert_email(session: Session, token_hash: str, now: datetime) -> str | None:
+    """Make the pending address with this token the alert address. Returns it, or
+    None if no unexpired pending address has this token."""
+    settings = session.scalar(
+        select(UserSettings).where(
+            UserSettings.pending_token_hash == token_hash, UserSettings.pending_expires_at > now
+        )
+    )
+    if settings is None:
+        return None
+    settings.alert_email = settings.pending_email
+    settings.pending_email = None
+    settings.pending_token_hash = None
+    settings.pending_expires_at = None
+    session.commit()
+    return settings.alert_email
+
+
+def alert_emails_by_user(session: Session, user_ids: set[UUID]) -> dict[UUID, str]:
+    """The confirmed alternate alert address of each of these users who has one."""
+    query = select(UserSettings.user_id, UserSettings.alert_email).where(
+        UserSettings.user_id.in_(user_ids), UserSettings.alert_email.isnot(None)
+    )
+    return {user_id: email for user_id, email in session.execute(query)}
 
 
 def _time_filters(query, since: datetime | None, until: datetime | None):

@@ -126,6 +126,31 @@ class AlertNotification(Base):
     emailed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
+class UserSettings(Base):
+    """A user's account settings. One row per user, created the first time they
+    change something; until then the defaults apply."""
+
+    __tablename__ = "user_settings"
+    __table_args__ = (
+        CheckConstraint("default_radius_km > 0 AND default_radius_km <= 200", name="ck_user_settings_radius"),
+        CheckConstraint(
+            "default_min_probability >= 0 AND default_min_probability <= 1", name="ck_user_settings_min_probability"
+        ),
+    )
+
+    user_id: Mapped[uuid_module.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    #: A confirmed address alerts go to instead of the account's. Null: the account's.
+    alert_email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: An address waiting for its confirmation link to be opened. Only the token's
+    #: SHA-256 is stored, so a database leak doesn't leak working links.
+    pending_email: Mapped[str | None] = mapped_column(Text, nullable=True)
+    pending_token_hash: Mapped[str | None] = mapped_column(Text, nullable=True, unique=True)
+    pending_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: Starting values for the user's new alert areas.
+    default_radius_km: Mapped[float] = mapped_column(Float, nullable=False, server_default="25")
+    default_min_probability: Mapped[float] = mapped_column(Float, nullable=False, server_default="0.65")
+
+
 class RegionKind(str, enum.Enum):
     PROVINCE = "province"
     DEPARTMENT = "department"

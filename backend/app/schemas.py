@@ -155,6 +155,36 @@ class AlertResponse(BaseModel):
     detection: StoredDetection
 
 
+class AccountSettings(BaseModel):
+    #: Where alerts go: the confirmed alternate address, or the account's.
+    alert_email: str
+    #: Whether alert_email is the account's own address.
+    uses_account_email: bool
+    #: An alternate address waiting for its confirmation link, if any.
+    pending_email: str | None
+    default_radius_km: float
+    default_min_probability: float
+
+
+class AccountSettingsUpdate(BaseModel):
+    """Partial update - fields left unset are unchanged."""
+
+    default_radius_km: float | None = Field(None, gt=0, le=200)
+    default_min_probability: float | None = Field(None, ge=0, le=1)
+
+
+class AlertEmailChange(BaseModel):
+    email: str = Field(max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class AlertEmailConfirm(BaseModel):
+    token: str = Field(min_length=1, max_length=200)
+
+
+class AlertEmailConfirmed(BaseModel):
+    email: str
+
+
 class RegionKind(str, Enum):
     province = "province"
     department = "department"
