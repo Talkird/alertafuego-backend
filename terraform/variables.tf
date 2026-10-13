@@ -69,3 +69,23 @@ variable "alert_email_from" {
   type        = string
   default     = ""
 }
+
+variable "telegram_bot_username" {
+  description = "Username of the Telegram alerts bot, without the @ (from @BotFather). Leave empty to disable Telegram alerts."
+  type        = string
+  default     = ""
+}
+
+variable "telegram_bot_token" {
+  description = "Telegram bot token from @BotFather."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "telegram_webhook_secret" {
+  description = "Random string Telegram sends with every webhook call, so the backend can reject calls that aren't from Telegram."
+  type        = string
+  sensitive   = true
+  default     = ""
+}

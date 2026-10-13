@@ -10,13 +10,13 @@ from sqlalchemy.orm import Session
 
 from backend.app.auth import UserWithEmail, get_current_user, get_current_user_with_email
 from backend.app.crud import (
-    alert_emails_by_user,
     create_alert_area,
     delete_alert_area,
     get_own_alert_area,
     list_alert_areas,
     list_alerts,
     update_alert_area,
+    user_settings_by_user,
 )
 from backend.app.db import get_db
 from backend.app.models import AlertArea
@@ -45,6 +45,12 @@ def _to_response(area: AlertArea, alert_email: str | None) -> AlertAreaResponse:
     )
 
 
+def _alert_email(db: Session, user_id: UUID) -> str | None:
+    """The user's confirmed alternate alert address, if they set one."""
+    settings = user_settings_by_user(db, {user_id}).get(user_id)
+    return settings.alert_email if settings else None
+
+
 def _own_area(db: Session, area_id: int, user_id: UUID) -> AlertArea:
     area = get_own_alert_area(db, area_id, user_id)
     if area is None:
@@ -55,7 +61,7 @@ def _own_area(db: Session, area_id: int, user_id: UUID) -> AlertArea:
 @router.get("/alert-areas", response_model=list[AlertAreaResponse])
 def get_alert_areas(user_id: UUID = Depends(get_current_user), db: Session = Depends(get_db)) -> list[AlertAreaResponse]:
     areas = list_alert_areas(db, user_id)
-    alert_email = alert_emails_by_user(db, {user_id}).get(user_id)
+    alert_email = _alert_email(db, user_id)
     return [_to_response(area, alert_email) for area in areas]
 
 
@@ -66,7 +72,7 @@ def post_alert_area(
     db: Session = Depends(get_db),
 ) -> AlertAreaResponse:
     area = create_alert_area(db, user.id, user.email, **payload.model_dump())
-    return _to_response(area, alert_emails_by_user(db, {user.id}).get(user.id))
+    return _to_response(area, _alert_email(db, user.id))
 
 
 @router.patch("/alert-areas/{area_id}", response_model=AlertAreaResponse)
@@ -82,7 +88,7 @@ def patch_alert_area(
     if any(updates.get(field) is None for field in updates):
         raise HTTPException(status_code=400, detail="Fields can't be set to null")
     area = update_alert_area(db, _own_area(db, area_id, user.id), user.email, updates)
-    return _to_response(area, alert_emails_by_user(db, {user.id}).get(user.id))
+    return _to_response(area, _alert_email(db, user.id))
 
 
 @router.delete("/alert-areas/{area_id}", status_code=204)
@@ -103,6 +109,7 @@ def get_alerts(
             area_name=area_name,
             created_at=notification.created_at,
             emailed=notification.emailed_at is not None,
+            telegram_sent=notification.telegram_sent_at is not None,
             detection=to_stored_detection(detection, report_count, has_image),
         )
         for notification, area_name, detection, report_count, has_image in list_alerts(db, user_id, limit)

@@ -6,6 +6,7 @@ from datetime import datetime
 
 from geoalchemy2 import Geography, Geometry
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -124,21 +125,18 @@ class AlertNotification(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
     #: Null when the email wasn't sent (no sender configured, or SES failed).
     emailed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: Null when no Telegram message was sent (not connected, or it failed).
+    telegram_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class UserSettings(Base):
-    """A user's account settings. One row per user, created the first time they
-    change something; until then the defaults apply."""
+    """A user's alert channels. One row per user, created the first time they change
+    something; until then alerts go by email to the account's address."""
 
     __tablename__ = "user_settings"
-    __table_args__ = (
-        CheckConstraint("default_radius_km > 0 AND default_radius_km <= 200", name="ck_user_settings_radius"),
-        CheckConstraint(
-            "default_min_probability >= 0 AND default_min_probability <= 1", name="ck_user_settings_min_probability"
-        ),
-    )
 
     user_id: Mapped[uuid_module.UUID] = mapped_column(PG_UUID(as_uuid=True), primary_key=True)
+    email_alerts: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     #: A confirmed address alerts go to instead of the account's. Null: the account's.
     alert_email: Mapped[str | None] = mapped_column(Text, nullable=True)
     #: An address waiting for its confirmation link to be opened. Only the token's
@@ -146,9 +144,14 @@ class UserSettings(Base):
     pending_email: Mapped[str | None] = mapped_column(Text, nullable=True)
     pending_token_hash: Mapped[str | None] = mapped_column(Text, nullable=True, unique=True)
     pending_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    #: Starting values for the user's new alert areas.
-    default_radius_km: Mapped[float] = mapped_column(Float, nullable=False, server_default="25")
-    default_min_probability: Mapped[float] = mapped_column(Float, nullable=False, server_default="0.65")
+    #: The Telegram chat alerts are sent to, set when the user opens the bot's
+    #: one-time link and presses Start. Null: Telegram not connected.
+    telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, unique=True)
+    #: The Telegram account's @username (or first name), to show which one is connected.
+    telegram_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: The pending one-time link's token, hashed like pending_token_hash.
+    telegram_link_token_hash: Mapped[str | None] = mapped_column(Text, nullable=True, unique=True)
+    telegram_link_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class RegionKind(str, enum.Enum):

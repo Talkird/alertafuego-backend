@@ -39,6 +39,10 @@ la guía operativa de "cómo correr esto hoy", no el historial de decisiones.
    # Opcional, para emails de alertas (ver "Alertas por zona"):
    ALERT_EMAIL_FROM="alertas@tu-dominio"
    FRONTEND_URL="http://localhost:3000"
+   # Opcional, para alertas por Telegram (ver "Alertas por Telegram"):
+   TELEGRAM_BOT_TOKEN="123456:ABC..."
+   TELEGRAM_BOT_USERNAME="AlertaFuegoBot"
+   TELEGRAM_WEBHOOK_SECRET="un-string-aleatorio"
    ```
    `DATABASE_URL` es la conexión **directa** de Supabase (puerto `5432`), no el
    transaction pooler (puerto `6543`) — este backend es un proceso persistente, no
@@ -123,6 +127,36 @@ Los emails salen por Amazon SES desde `ALERT_EMAIL_FROM` y enlazan a
 `FRONTEND_URL/alertas`. Sin `ALERT_EMAIL_FROM` en `.env` no se envían (se loguea un
 warning) pero las alertas se registran igual. Configuración de SES en
 `terraform/README.md`, paso 5.
+
+### Cuenta y canales de aviso
+
+- `GET/PATCH /account` — canales del usuario (`email_alerts` prende o apaga el email).
+- `POST /account/alert-email` — recibir los emails en otra dirección. Se le envía un
+  enlace (vence en 24 h) a `FRONTEND_URL/confirmar-email`, que llama a
+  `POST /account/alert-email/confirm` (sin login: el token alcanza). Sin
+  `ALERT_EMAIL_FROM`, el enlace se loguea en vez de enviarse.
+- `DELETE /account/alert-email` vuelve al email de la cuenta;
+  `DELETE /account/alert-email/pending` cancela un cambio sin confirmar.
+
+### Alertas por Telegram
+
+Un bot de Telegram envía las alertas a quien lo conecte desde **Mi cuenta**:
+`POST /account/telegram/link` devuelve un enlace de un solo uso
+(`t.me/<bot>?start=<token>`, vence en 30 min); al tocar *Iniciar* en Telegram, el bot
+recibe `/start <token>` y vincula ese chat. `/stop` en el chat lo desvincula, igual
+que `DELETE /account/telegram`. `POST /account/telegram/test` envía un mensaje de
+prueba. Si el usuario bloquea el bot, se desvincula solo.
+
+Telegram entrega los mensajes al bot por webhook (`POST /telegram/webhook`, que
+rechaza llamadas sin `TELEGRAM_WEBHOOK_SECRET`). Como no puede llegar a `localhost`,
+en local se usa polling:
+
+```
+python -m backend.app.telegram poll                       # local (borra el webhook)
+python -m backend.app.telegram set-webhook <URL backend>  # producción
+```
+
+Crear el bot y configurarlo en AWS: `terraform/README.md`, paso 6.
 
 ### Estadísticas
 

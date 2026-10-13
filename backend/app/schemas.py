@@ -152,25 +152,33 @@ class AlertResponse(BaseModel):
     area_name: str
     created_at: datetime
     emailed: bool
+    telegram_sent: bool
     detection: StoredDetection
 
 
 class AccountSettings(BaseModel):
-    #: Where alerts go: the confirmed alternate address, or the account's.
+    email_alerts: bool
+    #: Where email alerts go: the confirmed alternate address, or the account's.
     alert_email: str
     #: Whether alert_email is the account's own address.
     uses_account_email: bool
     #: An alternate address waiting for its confirmation link, if any.
     pending_email: str | None
-    default_radius_km: float
-    default_min_probability: float
+    #: Whether the backend has a Telegram bot configured.
+    telegram_available: bool
+    telegram_connected: bool
+    #: The connected Telegram account's @username or first name.
+    telegram_name: str | None
 
 
 class AccountSettingsUpdate(BaseModel):
-    """Partial update - fields left unset are unchanged."""
+    email_alerts: bool
 
-    default_radius_km: float | None = Field(None, gt=0, le=200)
-    default_min_probability: float | None = Field(None, ge=0, le=1)
+
+class TelegramLink(BaseModel):
+    #: Opens the bot in Telegram; pressing Start there connects the chat.
+    url: str
+    expires_at: datetime
 
 
 class AlertEmailChange(BaseModel):

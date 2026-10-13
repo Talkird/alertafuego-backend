@@ -1,9 +1,8 @@
-"""Account endpoints: the user's alert address (their account's, or another one they
-confirm through an emailed link) and the starting values for their new alert areas."""
+"""Account endpoints: the user's alert channels. Email goes to their account's
+address or to another one they confirm through an emailed link; Telegram is
+connected by opening a one-time link to the bot (see backend.app.telegram)."""
 
-import hashlib
-import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -15,6 +14,8 @@ from backend.app.crud import (
     get_user_settings,
     reset_alert_email,
     set_pending_alert_email,
+    set_telegram_link_token,
+    unlink_telegram,
     update_user_settings,
 )
 from backend.app.db import get_db
@@ -26,34 +27,29 @@ from backend.app.schemas import (
     AlertEmailChange,
     AlertEmailConfirm,
     AlertEmailConfirmed,
+    TelegramLink,
 )
+from backend.app.telegram import bot_username, send_message
+from backend.app.tokens import hash_token, new_token, utcnow
 
 router = APIRouter()
 
 CONFIRMATION_TTL = timedelta(hours=24)
-
-#: Used until the user saves their own (the same values the area form starts from).
-DEFAULT_RADIUS_KM = 25.0
-DEFAULT_MIN_PROBABILITY = 0.65
-
-
-def _hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode()).hexdigest()
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+#: The bot link is opened right away, from the same screen.
+TELEGRAM_LINK_TTL = timedelta(minutes=30)
 
 
 def _to_response(settings: UserSettings | None, account_email: str) -> AccountSettings:
     alert_email = settings.alert_email if settings else None
-    pending = bool(settings and settings.pending_email and settings.pending_expires_at > _now())
+    pending = bool(settings and settings.pending_email and settings.pending_expires_at > utcnow())
     return AccountSettings(
+        email_alerts=settings.email_alerts if settings else True,
         alert_email=alert_email or account_email,
         uses_account_email=alert_email is None,
         pending_email=settings.pending_email if pending else None,
-        default_radius_km=settings.default_radius_km if settings else DEFAULT_RADIUS_KM,
-        default_min_probability=settings.default_min_probability if settings else DEFAULT_MIN_PROBABILITY,
+        telegram_available=bot_username() is not None,
+        telegram_connected=bool(settings and settings.telegram_chat_id is not None),
+        telegram_name=settings.telegram_name if settings else None,
     )
 
 
@@ -68,12 +64,7 @@ def patch_account(
     user: UserWithEmail = Depends(get_current_user_with_email),
     db: Session = Depends(get_db),
 ) -> AccountSettings:
-    updates = payload.model_dump(exclude_unset=True)
-    if not updates:
-        raise HTTPException(status_code=400, detail="No fields to update")
-    if any(value is None for value in updates.values()):
-        raise HTTPException(status_code=400, detail="Fields can't be set to null")
-    return _to_response(update_user_settings(db, user.id, updates), user.email)
+    return _to_response(update_user_settings(db, user.id, payload.model_dump()), user.email)
 
 
 @router.post("/account/alert-email", response_model=AccountSettings)
@@ -88,10 +79,10 @@ def post_alert_email(
     if email == user.email.lower():
         return _to_response(reset_alert_email(db, user.id), user.email)
 
-    token = secrets.token_urlsafe(32)
+    token = new_token()
     if not send_confirmation_email(email, token, int(CONFIRMATION_TTL.total_seconds() // 3600)):
         raise HTTPException(status_code=502, detail="Couldn't send the confirmation email")
-    settings = set_pending_alert_email(db, user.id, email, _hash_token(token), _now() + CONFIRMATION_TTL)
+    settings = set_pending_alert_email(db, user.id, email, hash_token(token), utcnow() + CONFIRMATION_TTL)
     return _to_response(settings, user.email)
 
 
@@ -115,7 +106,49 @@ def delete_pending_alert_email(
 def post_confirm_alert_email(payload: AlertEmailConfirm, db: Session = Depends(get_db)) -> AlertEmailConfirmed:
     """Open from the emailed link. No login needed: the token proves access to the
     inbox, and the link may well be opened on another device."""
-    email = confirm_alert_email(db, _hash_token(payload.token), _now())
+    email = confirm_alert_email(db, hash_token(payload.token), utcnow())
     if email is None:
         raise HTTPException(status_code=400, detail="The link is invalid or has expired")
     return AlertEmailConfirmed(email=email)
+
+
+@router.post("/account/telegram/link", response_model=TelegramLink)
+def post_telegram_link(
+    user: UserWithEmail = Depends(get_current_user_with_email), db: Session = Depends(get_db)
+) -> TelegramLink:
+    """A one-time link to the bot. Pressing Start in Telegram connects that chat."""
+    username = bot_username()
+    if username is None:
+        raise HTTPException(status_code=503, detail="Telegram is not configured")
+    token = new_token()
+    expires_at = utcnow() + TELEGRAM_LINK_TTL
+    set_telegram_link_token(db, user.id, hash_token(token), expires_at)
+    return TelegramLink(url=f"https://t.me/{username}?start={token}", expires_at=expires_at)
+
+
+@router.delete("/account/telegram", response_model=AccountSettings)
+def delete_telegram(
+    user: UserWithEmail = Depends(get_current_user_with_email), db: Session = Depends(get_db)
+) -> AccountSettings:
+    settings = get_user_settings(db, user.id)
+    if settings and settings.telegram_chat_id is not None:
+        send_message(
+            settings.telegram_chat_id, "Desconectaste Telegram desde AlertaFuego: no vas a recibir más alertas acá."
+        )
+    return _to_response(unlink_telegram(db, user.id), user.email)
+
+
+@router.post("/account/telegram/test", status_code=204)
+def post_telegram_test(user: UserWithEmail = Depends(get_current_user_with_email), db: Session = Depends(get_db)) -> None:
+    """Send a test message, so the user can check that alerts will arrive."""
+    settings = get_user_settings(db, user.id)
+    if settings is None or settings.telegram_chat_id is None:
+        raise HTTPException(status_code=409, detail="Telegram is not connected")
+    result = send_message(
+        settings.telegram_chat_id, "👋 Mensaje de prueba de AlertaFuego: las alertas de tus zonas van a llegar acá."
+    )
+    if result == "blocked":
+        unlink_telegram(db, user.id)
+        raise HTTPException(status_code=409, detail="The bot was blocked in Telegram")
+    if result == "failed":
+        raise HTTPException(status_code=502, detail="Couldn't send the Telegram message")

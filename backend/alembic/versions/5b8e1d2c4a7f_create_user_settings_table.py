@@ -1,4 +1,4 @@
-"""create user_settings table
+"""create user_settings table, add telegram_sent_at to alert_notifications
 
 Revision ID: 5b8e1d2c4a7f
 Revises: cc2e2412d83b
@@ -23,21 +23,24 @@ def upgrade() -> None:
     op.create_table(
         'user_settings',
         sa.Column('user_id', sa.UUID(), nullable=False),
+        sa.Column('email_alerts', sa.Boolean(), server_default='true', nullable=False),
         sa.Column('alert_email', sa.Text(), nullable=True),
         sa.Column('pending_email', sa.Text(), nullable=True),
         sa.Column('pending_token_hash', sa.Text(), nullable=True),
         sa.Column('pending_expires_at', sa.DateTime(), nullable=True),
-        sa.Column('default_radius_km', sa.Float(), server_default='25', nullable=False),
-        sa.Column('default_min_probability', sa.Float(), server_default='0.65', nullable=False),
-        sa.CheckConstraint('default_radius_km > 0 AND default_radius_km <= 200', name='ck_user_settings_radius'),
-        sa.CheckConstraint(
-            'default_min_probability >= 0 AND default_min_probability <= 1', name='ck_user_settings_min_probability'
-        ),
+        sa.Column('telegram_chat_id', sa.BigInteger(), nullable=True),
+        sa.Column('telegram_name', sa.Text(), nullable=True),
+        sa.Column('telegram_link_token_hash', sa.Text(), nullable=True),
+        sa.Column('telegram_link_expires_at', sa.DateTime(), nullable=True),
         sa.PrimaryKeyConstraint('user_id'),
         sa.UniqueConstraint('pending_token_hash'),
+        sa.UniqueConstraint('telegram_chat_id'),
+        sa.UniqueConstraint('telegram_link_token_hash'),
     )
+    op.add_column('alert_notifications', sa.Column('telegram_sent_at', sa.DateTime(), nullable=True))
 
 
 def downgrade() -> None:
     """Downgrade schema."""
+    op.drop_column('alert_notifications', 'telegram_sent_at')
     op.drop_table('user_settings')

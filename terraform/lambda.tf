@@ -21,6 +21,9 @@ resource "aws_lambda_function" "backend" {
       FRONTEND_ORIGINS              = var.frontend_origins
       FRONTEND_URL                  = var.frontend_url
       ALERT_EMAIL_FROM              = var.alert_email_from
+      TELEGRAM_BOT_USERNAME         = var.telegram_bot_username
+      TELEGRAM_BOT_TOKEN            = var.telegram_bot_token
+      TELEGRAM_WEBHOOK_SECRET       = var.telegram_webhook_secret
     }
   }
 

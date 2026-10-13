@@ -50,6 +50,7 @@ Note the outputs — you'll need them below:
 | `FRONTEND_ORIGINS` | comma-separated, e.g. `https://your-frontend.example` (no brackets/quotes) |
 | `FRONTEND_URL` | public frontend URL, linked from alert emails, e.g. `https://your-frontend.example` |
 | `ALERT_EMAIL_FROM` | sender for alert emails, verified in SES (see step 5) — leave unset to disable alert emails |
+| `TELEGRAM_BOT_USERNAME` | the alerts bot's username, without the @ (see step 6) — leave unset to disable Telegram alerts |
 
 **Settings → Secrets and variables → Actions → Secrets** (sensitive):
 | Name | Value |
@@ -57,6 +58,8 @@ Note the outputs — you'll need them below:
 | `AWS_DEPLOY_ROLE_ARN` | bootstrap output `github_actions_deploy_role_arn` |
 | `DATABASE_URL` | Supabase Postgres connection string |
 | `SUPABASE_URL` | Supabase project URL |
+| `TELEGRAM_BOT_TOKEN` | the bot's token from @BotFather (see step 6) |
+| `TELEGRAM_WEBHOOK_SECRET` | any random string, e.g. `openssl rand -hex 32` (see step 6) |
 | `EE_SERVICE_ACCOUNT_KEY` | GCP service-account JSON key (see step 3) — leave unset for now if you don't have it yet; Earth Engine calls will 503 until it's added and the workflow re-run |
 
 ### 3. Google Earth Engine service account (for the Lambda runtime)
@@ -93,6 +96,19 @@ verified identities:
    too, and at most 200 emails a day. Verify your own test recipients the same way,
    or request production access (**Account dashboard → Request production access**)
    before real users sign up.
+
+### 6. Telegram alerts (bot)
+
+1. In Telegram, message **@BotFather** → `/newbot` → pick a name (e.g. "AlertaFuego")
+   and a username ending in `bot`. It replies with the bot's token.
+2. Set the `TELEGRAM_BOT_USERNAME` variable and the `TELEGRAM_BOT_TOKEN` and
+   `TELEGRAM_WEBHOOK_SECRET` secrets (step 2), and re-run the workflow.
+3. Point the bot at the deployed backend, once (from `alertafuego-backend/`, with the
+   same token and secret in `.env`):
+   ```
+   python -m backend.app.telegram set-webhook <function_url output>
+   ```
+   Users then connect from **Mi cuenta → Conectar Telegram** in the frontend.
 
 ## Everyday use
 

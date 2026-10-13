@@ -23,10 +23,14 @@ class AlertedDetection:
     image_time: datetime  # naive UTC, as stored
 
 
+def format_local_time(image_time: datetime) -> str:
+    """A stored (naive UTC) time in Argentina's time, e.g. "13/10/2026 14:30"."""
+    return (image_time + _ART_OFFSET).strftime("%d/%m/%Y %H:%M")
+
+
 def _format_detection(d: AlertedDetection) -> str:
-    local = (d.image_time + _ART_OFFSET).strftime("%d/%m/%Y %H:%M")
     return (
-        f"- Probabilidad {d.probability:.0%}, imagen del {local} (hora argentina)\n"
+        f"- Probabilidad {d.probability:.0%}, imagen del {format_local_time(d.image_time)} (hora argentina)\n"
         f"  {d.lat:.4f}, {d.lon:.4f} - https://www.google.com/maps?q={d.lat},{d.lon}"
     )
 

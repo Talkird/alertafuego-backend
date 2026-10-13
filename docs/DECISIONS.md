@@ -200,21 +200,27 @@
 - The loader has to be run once per database. It has been run on the Supabase DB.
 - Detections outside every region (offshore) are not counted in `/stats/regions`.
 
-### [2026-10-13] — Let users send alerts to a confirmed alternate email, stored in a user_settings table
+### [2026-10-13] — Add Telegram alerts and a confirmed alternate alert email, stored in a user_settings table
 
-**Context:** Users asked for an account page where alerts can go to an email other than their login's. Each `alert_areas` row copies the account email from the JWT, and there was nowhere to keep per-user settings.
-**Decision:** A `user_settings` table (one row per user) holds a confirmed `alert_email`, a pending address with the SHA-256 of a 24-hour confirmation token, and the default radius and minimum probability for new zones. `/account` endpoints manage it. Alert dispatch and `GET /alert-areas` use the confirmed address when there is one, else the area's account email.
+**Context:** Users asked for an account page where they choose how alerts reach them: Telegram, and an email other than their login's. Each `alert_areas` row copies the account email from the JWT, and there was nowhere to keep per-user settings.
+**Decision:**
+- A `user_settings` table (one row per user) holds an email on/off switch, a confirmed `alert_email`, a pending address with its 24-hour confirmation token, and the connected Telegram chat.
+- Telegram goes through a bot. A user connects by opening a one-time `t.me/<bot>?start=<token>` link (30 minutes) from their account page and pressing Start. The bot receives updates on `POST /telegram/webhook`, checked with a secret header.
+- Each alert records `emailed_at` and `telegram_sent_at` separately.
 **Alternatives considered:**
-- Let users type any address without confirmation.
+- Let users type any address, or a Telegram username, without confirmation.
 - Store the alternate address on each alert area.
 - Ask for a phone number now, for later WhatsApp or SMS alerts.
+- Poll Telegram (`getUpdates`) in production instead of a webhook.
+- Per-user defaults for new zones (built, then dropped at the user's request before merge).
 **Rationale:**
-- Without confirmation, anyone could point alert emails at someone else's inbox.
-- One address per user keeps zones consistent; per-zone addresses weren't requested.
-- No channel uses a phone number yet: a Telegram bot can only message a chat after the user presses Start, and WhatsApp/SMS cost money per message. Collecting it would be personal data with no use.
-- Only the token hash is stored, so a database leak doesn't expose working links.
+- Without confirmation, anyone could point alerts at someone else's inbox. A bot can only message a chat after the user presses Start, so the deep link both confirms and connects.
+- Only token hashes are stored, so a database leak doesn't expose working links.
+- The backend runs on Lambda behind a public function URL: a webhook needs no always-on process, polling would.
+- WhatsApp and SMS cost money per message, and WhatsApp needs Meta approval. The phone field is shown as "Próximamente" in the frontend; nothing stores it yet.
 **Consequences:**
+- Telegram needs `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` and `TELEGRAM_WEBHOOK_SECRET`, plus a one-time `python -m backend.app.telegram set-webhook <URL>`. Without them the account page shows Telegram as unavailable.
+- Local runs use `python -m backend.app.telegram poll`, which removes the webhook; run set-webhook again afterwards.
+- A user who blocks the bot is disconnected automatically on the next message.
 - While SES is in sandbox mode, confirmation and alert emails only reach SES-verified addresses.
-- Without `ALERT_EMAIL_FROM` (local runs), the confirmation link is logged instead of emailed.
 - Account deletion is not implemented: removing the Supabase `auth.users` row needs the service-role key or a privilege the backend doesn't use yet.
-- Telegram, when added, gets its chat id in the same table.

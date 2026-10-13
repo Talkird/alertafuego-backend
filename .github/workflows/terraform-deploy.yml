@@ -32,10 +32,13 @@ env:
   TF_VAR_frontend_origins: ${{ vars.FRONTEND_ORIGINS }}
   TF_VAR_frontend_url: ${{ vars.FRONTEND_URL }}
   TF_VAR_alert_email_from: ${{ vars.ALERT_EMAIL_FROM }}
+  TF_VAR_telegram_bot_username: ${{ vars.TELEGRAM_BOT_USERNAME }}
   TF_VAR_earth_engine_project_id: ${{ vars.EARTH_ENGINE_PROJECT_ID }}
   TF_VAR_database_url: ${{ secrets.DATABASE_URL }}
   TF_VAR_supabase_url: ${{ secrets.SUPABASE_URL }}
   TF_VAR_ee_service_account_key: ${{ secrets.EE_SERVICE_ACCOUNT_KEY }}
+  TF_VAR_telegram_bot_token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TF_VAR_telegram_webhook_secret: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
 
 jobs:
   deploy:
