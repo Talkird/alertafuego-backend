@@ -1,15 +1,20 @@
 """Region alerts: after a detection run is saved, find the new detections that fall
-inside users' alert areas, record them as alerts and email each area's owner."""
+inside users' alert areas, record them as alerts and send them to each area's owner:
+by email (to their confirmed alternate address, if they set one, unless they turned
+email off) and by Telegram, if they connected it."""
 
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from geoalchemy2.shape import to_shape
 from sqlalchemy import exists, func, insert, select
 from sqlalchemy.orm import Session, aliased
 
+from backend.app.crud import unlink_telegram_chat, user_settings_by_user
 from backend.app.mailer import AlertedDetection, send_alert_email
 from backend.app.models import AlertArea, AlertNotification, Detection
+from backend.app.telegram import send_alert
+from backend.app.tokens import utcnow
 
 #: A fire stays visible for hours, across many runs. A detection doesn't alert an area
 #: again if that area already alerted for one within COOLDOWN_RADIUS_KM and COOLDOWN
@@ -79,15 +84,29 @@ def process_new_detections(session: Session, detection_ids: list[int]) -> int:
         ):
             kept.append((detection, latlon))
 
+    settings_by_user = user_settings_by_user(session, {area.user_id for area, _ in by_area.values()})
     for area, kept in by_area.values():
+        settings = settings_by_user.get(area.user_id)
         alerted = [
             AlertedDetection(lat=lat, lon=lon, probability=d.probability, image_time=d.image_time)
             for d, (lat, lon) in kept
         ]
-        emailed_at = datetime.now(timezone.utc).replace(tzinfo=None) if send_alert_email(area.email, area.name, alerted) else None
+        emailed_at = telegram_sent_at = None
+        if settings is None or settings.email_alerts:
+            to = (settings.alert_email if settings else None) or area.email
+            emailed_at = utcnow() if send_alert_email(to, area.name, alerted) else None
+        if settings is not None and settings.telegram_chat_id is not None:
+            result = send_alert(settings.telegram_chat_id, area.name, alerted)
+            telegram_sent_at = utcnow() if result == "sent" else None
+            if result == "blocked":
+                # They blocked the bot: stop trying, and show Telegram as disconnected.
+                unlink_telegram_chat(session, settings.telegram_chat_id)
         session.execute(
             insert(AlertNotification),
-            [{"area_id": area.id, "detection_id": d.id, "emailed_at": emailed_at} for d, _ in kept],
+            [
+                {"area_id": area.id, "detection_id": d.id, "emailed_at": emailed_at, "telegram_sent_at": telegram_sent_at}
+                for d, _ in kept
+            ],
         )
     session.commit()
     return sum(len(kept) for _, kept in by_area.values())

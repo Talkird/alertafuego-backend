@@ -15,12 +15,16 @@ resource "aws_lambda_function" "backend" {
   environment {
     variables = {
       DATABASE_URL                  = var.database_url
+      DETECT_API_KEY                = var.detect_api_key
       SUPABASE_URL                  = var.supabase_url
       EARTH_ENGINE_PROJECT_ID       = var.earth_engine_project_id
       EE_SERVICE_ACCOUNT_SECRET_ARN = aws_secretsmanager_secret.ee_service_account.arn
       FRONTEND_ORIGINS              = var.frontend_origins
       FRONTEND_URL                  = var.frontend_url
       ALERT_EMAIL_FROM              = var.alert_email_from
+      TELEGRAM_BOT_USERNAME         = var.telegram_bot_username
+      TELEGRAM_BOT_TOKEN            = var.telegram_bot_token
+      TELEGRAM_WEBHOOK_SECRET       = var.telegram_webhook_secret
     }
   }
 

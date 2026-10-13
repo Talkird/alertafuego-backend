@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from backend.app.alerts import process_new_detections
+from backend.app.auth import require_detect_key
 from backend.app.crud import save_detections
 from backend.app.db import get_db
 from backend.app.schemas import BBoxSchema, Detection, DetectionResponse
@@ -17,7 +18,7 @@ from model.inference.raster_fetch import NoImageAvailableError
 from model.inference.service import DetectionResult, InferenceContext, run_detection
 from model.training.config import default_config as default_training_config
 
-router = APIRouter(prefix="/detect")
+router = APIRouter(prefix="/detect", dependencies=[Depends(require_detect_key)])
 
 
 def _debug_image_dir() -> Path | None:

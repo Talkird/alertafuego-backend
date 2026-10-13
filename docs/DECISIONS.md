@@ -161,6 +161,28 @@
 **Rationale:** A dedicated `StoredDetection` schema matches what the user explicitly described wanting in the frontend (a logs table "siguiendo el schema de la base de datos") - `DetectionResponse` is shaped around one live scan (`image_time`/`bbox`/`threshold` once, `detections` list nested inside), whereas reads need each row's own `id`/`image_time`/`bbox`/`threshold`/`detected_at` independently, since rows come from many different past scans.
 **Consequences:** This is the endpoint the frontend should actually build against for the map and logs table - the `/detect/*` endpoints remain for triggering a fresh scan (e.g. a manual "refresh now" button or a future scheduled job), not for routine reads. No pagination beyond `limit`/`since`/`until` (no cursor/offset) - fine at current data volume, revisit if the table grows large.
 
+### [2026-09-29] — Write dataset exports day by day, resume after crashes, and retry failed days
+
+**Context:** A full-month export (April 2025) crashed after ~30 minutes when Earth Engine rejected a single call with a 403 "Not signed up for Earth Engine or project is not registered", after hundreds of identical calls had succeeded in the same run (the project was confirmed working again minutes later). Because `export_dataset.main()` held every sample in memory and only wrote files at the end, the 3 finished days were lost; a month takes ~6.5h (~12.5 min per capped day, measured), so any single failure wasted hours.
+**Decision:** `export_dataset.py` now saves each day's `.npz` files and appends its rows to `manifest.csv` as soon as the day is built, records the day in `completed_days.txt` inside `--output-dir`, and on start skips days already listed there (continuing the sample numbering from the manifest). A day that raises `ee.EEException` or `OSError` is rebuilt from scratch up to 4 times, waiting 60s/120s/180s between attempts.
+**Alternatives considered:**
+- Retry each individual Earth Engine call (wrapping every `getInfo()`/`computePixels` in matching, patches, labels and negative sampling).
+- Rely on Earth Engine's built-in retries (`googleapiclient` `num_retries`, which only retries 429/5xx, not this 403).
+- Keep the all-at-end write and export shorter ranges (e.g. one week) per run into separate folders.
+**Rationale:** Day-level retry covers every Earth Engine call in one place instead of touching four modules; rebuilding a failed day costs at most ~12 min, negligible against a 6h run. Per-day writes bound the loss from a hard crash to the day in progress and make "re-run the same command" the recovery procedure, instead of manually splitting ranges.
+**Consequences:** `write_manifest` (overwrite) became `append_manifest` (append, header only when the file is new), so re-running into an existing `--output-dir` now adds to it instead of clobbering it — this reverses the "overwrites on every invocation" behavior noted in the 2026-07-25 chunking entry. Each export (e.g. each month) must still use its own `--output-dir` to keep datasets separate, and a resumed run must reuse the same split dates. If a crash lands between appending a day's manifest rows and recording it in `completed_days.txt` (a sub-millisecond window), that day is re-exported on resume and its rows appear twice; not handled.
+
+### [2026-10-01] — Keep each dataset export in its own folder and train on a merged manifest; add a 2-minute Earth Engine request deadline
+
+**Context:** A second month (April 2025) was exported alongside September 2025, but `train_model.py` reads a single `--dataset-dir/manifest.csv`, and September's manifest (exported on Windows) stores backslash paths that don't resolve on macOS/Linux. Separately, the April export hung for 3+ hours on one Earth Engine HTTPS request (open connection, 0% CPU): requests have no timeout by default, so the day-level retry never fired.
+**Decision:** Every export lives in `model/dataset/<YYYY-MM>/` (September moved from the root into `model/dataset/2025-09/`), `export_dataset.py` now requires `--output-dir`, and a new `model/scripts/merge_datasets.py` writes `model/dataset/manifest.csv` listing all samples from every subfolder with POSIX paths relative to `model/dataset`, without copying files. `export_dataset.py` also calls `ee.data.setDeadline(2 min)` after initializing Earth Engine.
+**Alternatives considered:**
+- Add a `--manifest`/multiple `--dataset-dir` option to `train_model.py` instead of merging manifests.
+- Copy or hardlink all months into one renumbered dataset folder.
+- A 5-minute deadline, or setting the deadline in `ee_client.init_earth_engine()` (shared with the API server).
+**Rationale:** A merged manifest needs no change to the training code (its default `--dataset-dir model/dataset` keeps working) and costs no disk space; keeping months separate makes each one independently resumable and removable. Measured: with a deadline, googleapiclient retries a timed-out call 5 times and then raises `TimeoutError` (an `OSError`), which the day-level retry already catches — so the worst case per stalled call is roughly 6× the deadline; 2 minutes bounds that to ~12 min, while every call in the pipeline normally returns in seconds. Setting it only in the export script keeps the API server's behavior unchanged.
+**Consequences:** `merge_datasets` must be re-run after each new month, before training. Each month keeps its own temporal train/val/test split, so val/test now span every month. Running `export_dataset` without `--output-dir` is an error instead of writing into `model/dataset/`. Training center-crops patches, so the 33×33 patches some exports produce are fine.
+
 ### [2026-10-12] — Region alerts: point + radius areas, checked after each detection run, emailed through SES
 
 **Context:** Users should be able to pick an area and be told when a fire appears there. Detection runs only happen on demand (`POST /detect/*`, ~1 minute for all of Argentina). There's no scheduler, and adding one was deferred.
@@ -199,3 +221,47 @@
 **Consequences:**
 - The loader has to be run once per database. It has been run on the Supabase DB.
 - Detections outside every region (offshore) are not counted in `/stats/regions`.
+
+### [2026-10-13] — Add Telegram alerts and a confirmed alternate alert email, stored in a user_settings table
+
+**Context:** Users asked for an account page where they choose how alerts reach them: Telegram, and an email other than their login's. Each `alert_areas` row copies the account email from the JWT, and there was nowhere to keep per-user settings.
+**Decision:**
+- A `user_settings` table (one row per user) holds an email on/off switch, a confirmed `alert_email`, a pending address with its 24-hour confirmation token, and the connected Telegram chat.
+- Telegram goes through a bot. A user connects by opening a one-time `t.me/<bot>?start=<token>` link (30 minutes) from their account page and pressing Start. The bot receives updates on `POST /telegram/webhook`, checked with a secret header.
+- Each alert records `emailed_at` and `telegram_sent_at` separately.
+**Alternatives considered:**
+- Let users type any address, or a Telegram username, without confirmation.
+- Store the alternate address on each alert area.
+- Ask for a phone number now, for later WhatsApp or SMS alerts.
+- Poll Telegram (`getUpdates`) in production instead of a webhook.
+- Per-user defaults for new zones (built, then dropped at the user's request before merge).
+**Rationale:**
+- Without confirmation, anyone could point alerts at someone else's inbox. A bot can only message a chat after the user presses Start, so the deep link both confirms and connects.
+- Only token hashes are stored, so a database leak doesn't expose working links.
+- The backend runs on Lambda behind a public function URL: a webhook needs no always-on process, polling would.
+- WhatsApp and SMS cost money per message, and WhatsApp needs Meta approval. The phone field is shown as "Próximamente" in the frontend; nothing stores it yet.
+**Consequences:**
+- Telegram needs `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME` and `TELEGRAM_WEBHOOK_SECRET`, plus a one-time `python -m backend.app.telegram set-webhook <URL>`. Without them the account page shows Telegram as unavailable.
+- Local runs use `python -m backend.app.telegram poll`, which removes the webhook; run set-webhook again afterwards.
+- A user who blocks the bot is disconnected automatically on the next message.
+- While SES is in sandbox mode, confirmation and alert emails only reach SES-verified addresses.
+- Account deletion is not implemented: removing the Supabase `auth.users` row needs the service-role key or a privilege the backend doesn't use yet.
+
+### [2026-10-13] — Require an API key to run detections
+
+**Context:** `POST /detect/demo` and `POST /detect/argentina` were open to anyone. Each call runs about a minute of Lambda, uses Earth Engine quota, writes detections and runs alert matching (emails, Telegram). The frontend never calls them.
+**Decision:** Both endpoints require the `DETECT_API_KEY` secret in an `X-API-Key` header, compared in constant time. They answer 401 without it, and 503 when the backend has no key configured (fail closed). Every other endpoint is unchanged: user data needs a Supabase JWT, and detections, stats and the anonymous report list stay public.
+**Alternatives considered:**
+- An API key shipped in the frontend, so that "only the app" can call the API.
+- Supabase login for `/detect` (any signed-up user could run detections).
+- A Lambda reserved-concurrency cap.
+- CloudFront + AWS WAF rate limiting.
+**Rationale:**
+- A key in the frontend is readable by any visitor in the browser's developer tools, so it can't restrict callers. Only a secret kept on servers can.
+- Signing up is open, so a login check wouldn't limit who runs detections.
+- The account's Lambda concurrency limit is 10, and AWS keeps at least 10 unreserved, so a reservation can't be set. The account limit already caps simultaneous runs at 10.
+- WAF costs a few dollars a month and needs CloudFront in front of the function URL. That isn't warranted yet.
+**Consequences:**
+- Running a detection by hand needs the header (`curl -H "X-API-Key: ..."`, or **Authorize** in `/docs`). The future scheduler must hold the key.
+- New GitHub secret `DETECT_API_KEY`, passed to Lambda through Terraform. It is required, so the deploy fails until it's set.
+- Local `.env` needs `DETECT_API_KEY` to run detections.

@@ -36,9 +36,15 @@ la guía operativa de "cómo correr esto hoy", no el historial de decisiones.
    EARTH_ENGINE_PROJECT_ID="tu-proyecto-de-gee"
    DATABASE_URL="postgresql+psycopg://postgres:<password>@db.<project-ref>.supabase.co:5432/postgres"
    FRONTEND_ORIGINS="http://localhost:3000"
+   # Clave para correr detecciones (POST /detect/*), ej. `openssl rand -hex 32`:
+   DETECT_API_KEY="una-clave-larga-y-aleatoria"
    # Opcional, para emails de alertas (ver "Alertas por zona"):
    ALERT_EMAIL_FROM="alertas@tu-dominio"
    FRONTEND_URL="http://localhost:3000"
+   # Opcional, para alertas por Telegram (ver "Alertas por Telegram"):
+   TELEGRAM_BOT_TOKEN="123456:ABC..."
+   TELEGRAM_BOT_USERNAME="AlertaFuegoBot"
+   TELEGRAM_WEBHOOK_SECRET="un-string-aleatorio"
    ```
    `DATABASE_URL` es la conexión **directa** de Supabase (puerto `5432`), no el
    transaction pooler (puerto `6543`) — este backend es un proceso persistente, no
@@ -58,13 +64,32 @@ captura GOES-19 más cercana en tiempo, extrae parches de 16 bandas calibradas.
 ```
 python -m model.scripts.export_dataset \
     --start-date 2025-09-01 --end-date 2025-10-01 \
-    --train-end-date 2025-09-24 --val-end-date 2025-09-27
+    --train-end-date 2025-09-24 --val-end-date 2025-09-27 \
+    --output-dir model/dataset/2025-09
 ```
 
-Genera `model/dataset/{train,val,test}/sample_XXXXXX.npz` (`patch` `(16,H,W)` float32,
-`mask` `(H,W)` uint8) + `model/dataset/manifest.csv`. `--limit N` acota la cantidad de
-muestras para pruebas rápidas. Rango largo de fechas se procesa internamente en chunks
-diarios (hay un tope de 5000 elementos por query de Earth Engine).
+Cada exportación (un mes) va en su propia carpeta: genera
+`<output-dir>/{train,val,test}/sample_XXXXXX.npz` (`patch` `(16,H,W)` float32, `mask`
+`(H,W)` uint8) + `<output-dir>/manifest.csv`. `--output-dir` es obligatorio. `--end-date`
+es exclusivo (primer día del mes siguiente). `--limit N` acota la cantidad de muestras
+para pruebas rápidas. Rango largo de fechas se procesa internamente en chunks diarios
+(hay un tope de 5000 elementos por query de Earth Engine).
+
+Cada día se guarda en disco apenas termina y queda registrado en
+`completed_days.txt` dentro de `--output-dir`: si la exportación se corta, volver a
+correr el mismo comando (mismas fechas y carpeta) retoma desde el día siguiente. Los
+errores de Earth Engine, de red y los requests colgados (timeout de 2 minutos)
+reintentan el día hasta 4 veces.
+
+Después de exportar un mes, combinar todos los meses en un único manifest para
+entrenar:
+
+```
+python -m model.scripts.merge_datasets
+```
+
+Escribe `model/dataset/manifest.csv` con todas las muestras de `model/dataset/*/`
+(sin copiar archivos). Cada mes conserva su propio split train/val/test.
 
 ## Entrenamiento (fase 2)
 
@@ -72,7 +97,8 @@ diarios (hay un tope de 5000 elementos por query de Earth Engine).
 python -m model.scripts.train_model --epochs 30
 ```
 
-Args útiles: `--dataset-dir`, `--checkpoint-dir` (default `model/checkpoints`),
+Usa el manifest combinado (`model/dataset/manifest.csv`, ver `merge_datasets`
+arriba). Args útiles: `--dataset-dir`, `--checkpoint-dir` (default `model/checkpoints`),
 `--batch-size`, `--lr`, `--limit` (subset chico para smoke test). Corre en GPU si hay
 CUDA disponible (`torch.cuda.is_available()`), si no cae a CPU automáticamente. Guarda
 `model_best.pt`, `norm_stats.json`, `metrics.csv` y `training_curves.png` en
@@ -100,6 +126,14 @@ al polígono real de Argentina, no al rectángulo del bbox), **guardan las detec
 en Postgres**, y devuelven el mismo resultado en la respuesta HTTP (`image_time`,
 `bbox`, `threshold`, `chunk_count`, `detections: [{lat, lon, probability}]`).
 
+Piden la clave de `DETECT_API_KEY` en el header `X-API-Key` (401 sin ella, 503 si el
+backend no la tiene configurada): cada corrida gasta Lambda y cuota de Earth Engine,
+escribe en la base y puede disparar alertas. En `/docs`, cargarla con **Authorize**.
+
+```
+curl -X POST -H "X-API-Key: $DETECT_API_KEY" <URL backend>/detect/argentina
+```
+
 - `GET /detections` — lectura pura sobre lo ya guardado, sin llamar a Earth Engine,
   rápido. Filtros opcionales por query params: `west/south/east/north` (bbox),
   `since`/`until` (rango de `image_time`, ISO datetime), `limit` (default 500, tope
@@ -123,6 +157,36 @@ Los emails salen por Amazon SES desde `ALERT_EMAIL_FROM` y enlazan a
 `FRONTEND_URL/alertas`. Sin `ALERT_EMAIL_FROM` en `.env` no se envían (se loguea un
 warning) pero las alertas se registran igual. Configuración de SES en
 `terraform/README.md`, paso 5.
+
+### Cuenta y canales de aviso
+
+- `GET/PATCH /account` — canales del usuario (`email_alerts` prende o apaga el email).
+- `POST /account/alert-email` — recibir los emails en otra dirección. Se le envía un
+  enlace (vence en 24 h) a `FRONTEND_URL/confirmar-email`, que llama a
+  `POST /account/alert-email/confirm` (sin login: el token alcanza). Sin
+  `ALERT_EMAIL_FROM`, el enlace se loguea en vez de enviarse.
+- `DELETE /account/alert-email` vuelve al email de la cuenta;
+  `DELETE /account/alert-email/pending` cancela un cambio sin confirmar.
+
+### Alertas por Telegram
+
+Un bot de Telegram envía las alertas a quien lo conecte desde **Mi cuenta**:
+`POST /account/telegram/link` devuelve un enlace de un solo uso
+(`t.me/<bot>?start=<token>`, vence en 30 min); al tocar *Iniciar* en Telegram, el bot
+recibe `/start <token>` y vincula ese chat. `/stop` en el chat lo desvincula, igual
+que `DELETE /account/telegram`. `POST /account/telegram/test` envía un mensaje de
+prueba. Si el usuario bloquea el bot, se desvincula solo.
+
+Telegram entrega los mensajes al bot por webhook (`POST /telegram/webhook`, que
+rechaza llamadas sin `TELEGRAM_WEBHOOK_SECRET`). Como no puede llegar a `localhost`,
+en local se usa polling:
+
+```
+python -m backend.app.telegram poll                       # local (borra el webhook)
+python -m backend.app.telegram set-webhook <URL backend>  # producción
+```
+
+Crear el bot y configurarlo en AWS: `terraform/README.md`, paso 6.
 
 ### Estadísticas
 

@@ -152,7 +152,45 @@ class AlertResponse(BaseModel):
     area_name: str
     created_at: datetime
     emailed: bool
+    telegram_sent: bool
     detection: StoredDetection
+
+
+class AccountSettings(BaseModel):
+    email_alerts: bool
+    #: Where email alerts go: the confirmed alternate address, or the account's.
+    alert_email: str
+    #: Whether alert_email is the account's own address.
+    uses_account_email: bool
+    #: An alternate address waiting for its confirmation link, if any.
+    pending_email: str | None
+    #: Whether the backend has a Telegram bot configured.
+    telegram_available: bool
+    telegram_connected: bool
+    #: The connected Telegram account's @username or first name.
+    telegram_name: str | None
+
+
+class AccountSettingsUpdate(BaseModel):
+    email_alerts: bool
+
+
+class TelegramLink(BaseModel):
+    #: Opens the bot in Telegram; pressing Start there connects the chat.
+    url: str
+    expires_at: datetime
+
+
+class AlertEmailChange(BaseModel):
+    email: str = Field(max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+class AlertEmailConfirm(BaseModel):
+    token: str = Field(min_length=1, max_length=200)
+
+
+class AlertEmailConfirmed(BaseModel):
+    email: str
 
 
 class RegionKind(str, Enum):

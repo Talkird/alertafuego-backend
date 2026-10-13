@@ -40,6 +40,12 @@ variable "database_url" {
   sensitive   = true
 }
 
+variable "detect_api_key" {
+  description = "Secret required in the X-API-Key header to run detections (POST /detect/*). Without it those endpoints answer 503."
+  type        = string
+  sensitive   = true
+}
+
 variable "supabase_url" {
   description = "Supabase project URL (used to fetch the JWKS for auth)."
   type        = string
@@ -67,5 +73,25 @@ variable "frontend_url" {
 variable "alert_email_from" {
   description = "Sender address for alert emails. Must be a verified identity in Amazon SES (see README). Leave empty to disable alert emails - alerts are still recorded and shown in the app."
   type        = string
+  default     = ""
+}
+
+variable "telegram_bot_username" {
+  description = "Username of the Telegram alerts bot, without the @ (from @BotFather). Leave empty to disable Telegram alerts."
+  type        = string
+  default     = ""
+}
+
+variable "telegram_bot_token" {
+  description = "Telegram bot token from @BotFather."
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "telegram_webhook_secret" {
+  description = "Random string Telegram sends with every webhook call, so the backend can reject calls that aren't from Telegram."
+  type        = string
+  sensitive   = true
   default     = ""
 }

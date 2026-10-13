@@ -16,6 +16,7 @@ from backend.app.models import (
     RegionKind,
     ReportCategory,
     ReportVerdict,
+    UserSettings,
 )
 from model.inference.service import DetectionResult
 
@@ -217,6 +218,137 @@ def list_alerts(session: Session, user_id: UUID, limit: int) -> list[tuple[Alert
         .limit(limit)
     )
     return [tuple(row) for row in session.execute(query)]
+
+
+def get_user_settings(session: Session, user_id: UUID) -> UserSettings | None:
+    return session.get(UserSettings, user_id)
+
+
+def _get_or_create_user_settings(session: Session, user_id: UUID) -> UserSettings:
+    settings = session.get(UserSettings, user_id)
+    if settings is None:
+        settings = UserSettings(user_id=user_id)
+        session.add(settings)
+    return settings
+
+
+def _save(session: Session, settings: UserSettings) -> UserSettings:
+    session.commit()
+    session.refresh(settings)
+    return settings
+
+
+def update_user_settings(session: Session, user_id: UUID, updates: dict) -> UserSettings:
+    settings = _get_or_create_user_settings(session, user_id)
+    for field, value in updates.items():
+        setattr(settings, field, value)
+    return _save(session, settings)
+
+
+def _clear_pending_email(settings: UserSettings) -> None:
+    settings.pending_email = None
+    settings.pending_token_hash = None
+    settings.pending_expires_at = None
+
+
+def set_pending_alert_email(
+    session: Session, user_id: UUID, email: str, token_hash: str, expires_at: datetime
+) -> UserSettings:
+    """Store an address waiting for confirmation. Replaces any earlier pending one
+    (its link stops working); the current alert address keeps working meanwhile."""
+    settings = _get_or_create_user_settings(session, user_id)
+    settings.pending_email = email
+    settings.pending_token_hash = token_hash
+    settings.pending_expires_at = expires_at
+    return _save(session, settings)
+
+
+def reset_alert_email(session: Session, user_id: UUID) -> UserSettings:
+    """Back to the account's address: drop the alternate one and any pending one."""
+    settings = _get_or_create_user_settings(session, user_id)
+    settings.alert_email = None
+    _clear_pending_email(settings)
+    return _save(session, settings)
+
+
+def cancel_pending_alert_email(session: Session, user_id: UUID) -> UserSettings:
+    """Drop the address waiting for confirmation; the current alert address stays."""
+    settings = _get_or_create_user_settings(session, user_id)
+    _clear_pending_email(settings)
+    return _save(session, settings)
+
+
+def confirm_alert_email(session: Session, token_hash: str, now: datetime) -> str | None:
+    """Make the pending address with this token the alert address. Returns it, or
+    None if no unexpired pending address has this token."""
+    settings = session.scalar(
+        select(UserSettings).where(
+            UserSettings.pending_token_hash == token_hash, UserSettings.pending_expires_at > now
+        )
+    )
+    if settings is None:
+        return None
+    settings.alert_email = settings.pending_email
+    _clear_pending_email(settings)
+    session.commit()
+    return settings.alert_email
+
+
+def set_telegram_link_token(session: Session, user_id: UUID, token_hash: str, expires_at: datetime) -> UserSettings:
+    """Store the token of a new one-time bot link. Replaces any earlier one."""
+    settings = _get_or_create_user_settings(session, user_id)
+    settings.telegram_link_token_hash = token_hash
+    settings.telegram_link_expires_at = expires_at
+    return _save(session, settings)
+
+
+def link_telegram_chat(session: Session, token_hash: str, chat_id: int, name: str, now: datetime) -> bool:
+    """Connect a Telegram chat to the user whose unexpired link token this is.
+    A chat belongs to one user: one linked elsewhere moves here. Returns whether
+    the token was valid."""
+    settings = session.scalar(
+        select(UserSettings).where(
+            UserSettings.telegram_link_token_hash == token_hash, UserSettings.telegram_link_expires_at > now
+        )
+    )
+    if settings is None:
+        return False
+    previous = session.scalar(select(UserSettings).where(UserSettings.telegram_chat_id == chat_id))
+    if previous is not None and previous is not settings:
+        previous.telegram_chat_id = None
+        previous.telegram_name = None
+        session.flush()
+    settings.telegram_chat_id = chat_id
+    settings.telegram_name = name
+    settings.telegram_link_token_hash = None
+    settings.telegram_link_expires_at = None
+    session.commit()
+    return True
+
+
+def unlink_telegram(session: Session, user_id: UUID) -> UserSettings:
+    settings = _get_or_create_user_settings(session, user_id)
+    settings.telegram_chat_id = None
+    settings.telegram_name = None
+    settings.telegram_link_token_hash = None
+    settings.telegram_link_expires_at = None
+    return _save(session, settings)
+
+
+def unlink_telegram_chat(session: Session, chat_id: int) -> bool:
+    """Disconnect this chat from whichever user has it. Returns whether one did."""
+    settings = session.scalar(select(UserSettings).where(UserSettings.telegram_chat_id == chat_id))
+    if settings is None:
+        return False
+    settings.telegram_chat_id = None
+    settings.telegram_name = None
+    session.commit()
+    return True
+
+
+def user_settings_by_user(session: Session, user_ids: set[UUID]) -> dict[UUID, UserSettings]:
+    """The settings rows of these users (users without one have the defaults)."""
+    return {s.user_id: s for s in session.scalars(select(UserSettings).where(UserSettings.user_id.in_(user_ids)))}
 
 
 def _time_filters(query, since: datetime | None, until: datetime | None):
