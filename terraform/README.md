@@ -48,6 +48,8 @@ Note the outputs — you'll need them below:
 | `TFLOCK_TABLE` | bootstrap output `tflock_table` |
 | `EARTH_ENGINE_PROJECT_ID` | your GEE cloud project id |
 | `FRONTEND_ORIGINS` | comma-separated, e.g. `https://your-frontend.example` (no brackets/quotes) |
+| `FRONTEND_URL` | public frontend URL, linked from alert emails, e.g. `https://your-frontend.example` |
+| `ALERT_EMAIL_FROM` | sender for alert emails, verified in SES (see step 5) — leave unset to disable alert emails |
 
 **Settings → Secrets and variables → Actions → Secrets** (sensitive):
 | Name | Value |
@@ -78,6 +80,19 @@ aws s3 cp model/checkpoints/norm_stats.json s3://<model_artifacts_bucket_output>
 
 (`model_artifacts_bucket` is a terraform output — run `terraform output` in
 `terraform/` after the first apply, or check the AWS Console.)
+
+### 5. Alert emails (Amazon SES)
+
+Region alerts are emailed through SES from `ALERT_EMAIL_FROM`. SES only sends from
+verified identities:
+
+1. SES console (same region as the Lambda) → **Identities → Create identity** →
+   email address (or a domain you own) → click the link in the verification email.
+2. Set the `ALERT_EMAIL_FROM` GitHub variable to that address and re-run the workflow.
+3. A new SES account is in the **sandbox**: it can only send *to* verified addresses
+   too, and at most 200 emails a day. Verify your own test recipients the same way,
+   or request production access (**Account dashboard → Request production access**)
+   before real users sign up.
 
 ## Everyday use
 

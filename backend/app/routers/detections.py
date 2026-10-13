@@ -17,6 +17,22 @@ router = APIRouter(prefix="/detections")
 MAX_LIMIT = 5000
 
 
+def to_stored_detection(row: Detection, report_count: int, has_image: bool) -> StoredDetection:
+    point = to_shape(row.location)
+    return StoredDetection(
+        id=row.id,
+        lat=point.y,
+        lon=point.x,
+        probability=row.probability,
+        image_time=row.image_time,
+        detected_at=row.detected_at,
+        bbox=BBoxSchema(west=row.bbox_west, south=row.bbox_south, east=row.bbox_east, north=row.bbox_north),
+        threshold=row.threshold,
+        report_count=report_count,
+        has_image=has_image,
+    )
+
+
 @router.get("", response_model=list[StoredDetection])
 def get_detections(
     west: float | None = Query(None),
@@ -33,21 +49,7 @@ def get_detections(
         bbox = (west, south, east, north)
 
     rows = list_detections(db, bbox=bbox, since=since, until=until, limit=limit)
-    return [
-        StoredDetection(
-            id=row.id,
-            lat=to_shape(row.location).y,
-            lon=to_shape(row.location).x,
-            probability=row.probability,
-            image_time=row.image_time,
-            detected_at=row.detected_at,
-            bbox=BBoxSchema(west=row.bbox_west, south=row.bbox_south, east=row.bbox_east, north=row.bbox_north),
-            threshold=row.threshold,
-            report_count=report_count,
-            has_image=has_image,
-        )
-        for row, report_count, has_image in rows
-    ]
+    return [to_stored_detection(row, report_count, has_image) for row, report_count, has_image in rows]
 
 
 @router.get("/{detection_id}/image")

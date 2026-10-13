@@ -1,20 +1,29 @@
 """Database read/write operations."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
 from geoalchemy2.elements import WKTElement
 from sqlalchemy import func, insert, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
-from backend.app.models import Detection, DetectionReport, ReportCategory, ReportVerdict
+from backend.app.models import (
+    AlertArea,
+    AlertNotification,
+    Detection,
+    DetectionReport,
+    Region,
+    RegionKind,
+    ReportCategory,
+    ReportVerdict,
+)
 from model.inference.service import DetectionResult
 
 
-def save_detections(session: Session, result: DetectionResult) -> int:
-    """Bulk-insert result.detections as rows. Returns the number of rows inserted."""
+def save_detections(session: Session, result: DetectionResult) -> list[int]:
+    """Bulk-insert result.detections as rows. Returns the new rows' ids."""
     if not result.detections:
-        return 0
+        return []
 
     rows = [
         {
@@ -30,9 +39,19 @@ def save_detections(session: Session, result: DetectionResult) -> int:
         }
         for lat, lon, probability, image in result.detections
     ]
-    session.execute(insert(Detection), rows)
+    ids = list(session.scalars(insert(Detection).returning(Detection.id), rows))
     session.commit()
-    return len(rows)
+    return ids
+
+
+def _report_count():
+    """Correlated subquery counting a Detection row's reports (no join fan-out)."""
+    return (
+        select(func.count(DetectionReport.id))
+        .where(DetectionReport.detection_id == Detection.id)
+        .correlate(Detection)
+        .scalar_subquery()
+    )
 
 
 def list_detections(
@@ -47,13 +66,7 @@ def list_detections(
     with its report count (correlated subquery, no join fan-out) and whether it has
     a stored image (Detection.image is deferred, so this avoids pulling every row's
     image bytes just to list them)."""
-    report_count = (
-        select(func.count(DetectionReport.id))
-        .where(DetectionReport.detection_id == Detection.id)
-        .correlate(Detection)
-        .scalar_subquery()
-    )
-    query = select(Detection, report_count.label("report_count"), Detection.image.isnot(None).label("has_image"))
+    query = select(Detection, _report_count().label("report_count"), Detection.image.isnot(None).label("has_image"))
     if bbox is not None:
         west, south, east, north = bbox
         envelope = func.ST_MakeEnvelope(west, south, east, north, 4326)
@@ -130,3 +143,122 @@ def update_report(
     session.commit()
     session.refresh(report)
     return report
+
+
+def list_alert_areas(session: Session, user_id: UUID) -> list[AlertArea]:
+    """This user's alert areas, oldest first."""
+    query = select(AlertArea).where(AlertArea.user_id == user_id).order_by(AlertArea.created_at)
+    return list(session.scalars(query))
+
+
+def get_own_alert_area(session: Session, area_id: int, user_id: UUID) -> AlertArea | None:
+    """One alert area, or None if it doesn't exist or belongs to another user."""
+    return session.scalar(select(AlertArea).where(AlertArea.id == area_id, AlertArea.user_id == user_id))
+
+
+def create_alert_area(
+    session: Session,
+    user_id: UUID,
+    email: str,
+    name: str,
+    lat: float,
+    lon: float,
+    radius_km: float,
+    min_probability: float,
+) -> AlertArea:
+    area = AlertArea(
+        user_id=user_id,
+        email=email,
+        name=name,
+        center=WKTElement(f"POINT({lon} {lat})", srid=4326),
+        radius_km=radius_km,
+        min_probability=min_probability,
+    )
+    session.add(area)
+    session.commit()
+    session.refresh(area)
+    return area
+
+
+def update_alert_area(session: Session, area: AlertArea, email: str, updates: dict) -> AlertArea:
+    """Apply a partial update. `updates` may carry lat and lon (both or neither) in
+    place of `center`. The email is refreshed from the caller's token every time."""
+    if "lat" in updates or "lon" in updates:
+        lat, lon = updates.pop("lat"), updates.pop("lon")
+        area.center = WKTElement(f"POINT({lon} {lat})", srid=4326)
+    for field, value in updates.items():
+        setattr(area, field, value)
+    area.email = email
+    session.commit()
+    session.refresh(area)
+    return area
+
+
+def delete_alert_area(session: Session, area: AlertArea) -> None:
+    session.delete(area)
+    session.commit()
+
+
+def list_alerts(session: Session, user_id: UUID, limit: int) -> list[tuple[AlertNotification, str, Detection, int, bool]]:
+    """This user's alerts, most recent capture first, each with its area's name and
+    its detection (plus report count and has_image, as in list_detections)."""
+    query = (
+        select(
+            AlertNotification,
+            AlertArea.name,
+            Detection,
+            _report_count().label("report_count"),
+            Detection.image.isnot(None).label("has_image"),
+        )
+        .join(AlertArea, AlertArea.id == AlertNotification.area_id)
+        .join(Detection, Detection.id == AlertNotification.detection_id)
+        .where(AlertArea.user_id == user_id)
+        .order_by(Detection.image_time.desc(), AlertNotification.id.desc())
+        .limit(limit)
+    )
+    return [tuple(row) for row in session.execute(query)]
+
+
+def _time_filters(query, since: datetime | None, until: datetime | None):
+    if since is not None:
+        query = query.where(Detection.image_time >= since)
+    if until is not None:
+        query = query.where(Detection.image_time <= until)
+    return query
+
+
+def detection_counts_by_region(
+    session: Session, kind: RegionKind, since: datetime | None, until: datetime | None
+) -> list[tuple[str, str, str | None, int, float]]:
+    """(code, name, province name, detection count, max probability) for each region
+    of this kind that has at least one detection in range, busiest first."""
+    province = aliased(Region)
+    query = (
+        select(Region.code, Region.name, province.name, func.count(Detection.id), func.max(Detection.probability))
+        .join(Detection, func.ST_Contains(Region.geometry, Detection.location))
+        .outerjoin(province, (province.kind == RegionKind.PROVINCE) & (province.code == Region.province_code))
+        .where(Region.kind == kind)
+        .group_by(Region.code, Region.name, province.name)
+        .order_by(func.count(Detection.id).desc(), Region.name)
+    )
+    return [tuple(row) for row in session.execute(_time_filters(query, since, until))]
+
+
+def detection_counts_by_hour(session: Session, since: datetime | None, until: datetime | None) -> dict[int, int]:
+    """Detection count per hour of the day (0-23), Argentina time (UTC-3, no DST).
+    image_time is stored as naive UTC. Hours with no detections are omitted."""
+    hour = func.extract("hour", Detection.image_time - timedelta(hours=3))
+    query = select(hour, func.count(Detection.id)).group_by(hour)
+    return {int(h): count for h, count in session.execute(_time_filters(query, since, until))}
+
+
+def report_counts(
+    session: Session, since: datetime | None, until: datetime | None
+) -> list[tuple[ReportVerdict, ReportCategory | None, int]]:
+    """Report count per (verdict, category), over reports on detections in range."""
+    query = (
+        select(DetectionReport.verdict, DetectionReport.category, func.count(DetectionReport.id))
+        .join(Detection, Detection.id == DetectionReport.detection_id)
+        .group_by(DetectionReport.verdict, DetectionReport.category)
+    )
+    return [tuple(row) for row in session.execute(_time_filters(query, since, until))]

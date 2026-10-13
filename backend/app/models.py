@@ -4,8 +4,19 @@ import enum
 import uuid as uuid_module
 from datetime import datetime
 
-from geoalchemy2 import Geometry
-from sqlalchemy import CheckConstraint, DateTime, Enum, Float, ForeignKey, LargeBinary, Text, UniqueConstraint, func
+from geoalchemy2 import Geography, Geometry
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    LargeBinary,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -73,3 +84,69 @@ class DetectionReport(Base):
     )
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+
+class AlertArea(Base):
+    """A user's alert zone: a circle (center + radius). Every new detection inside it
+    with probability >= min_probability raises an alert, emailed to `email`."""
+
+    __tablename__ = "alert_areas"
+    __table_args__ = (
+        CheckConstraint("radius_km > 0 AND radius_km <= 200", name="ck_alert_area_radius"),
+        CheckConstraint("min_probability >= 0 AND min_probability <= 1", name="ck_alert_area_min_probability"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[uuid_module.UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False, index=True)
+    #: Copied from the user's JWT when the area is created or edited - the backend has
+    #: no other way to look up a Supabase user's email.
+    email: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    #: Geography (not Geometry) so ST_DWithin takes the radius in meters directly.
+    center = mapped_column(Geography("POINT", srid=4326, spatial_index=True), nullable=False)
+    radius_km: Mapped[float] = mapped_column(Float, nullable=False)
+    min_probability: Mapped[float] = mapped_column(Float, nullable=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+
+
+class AlertNotification(Base):
+    """One alert: a detection that fell inside an alert area. Doubles as the user's
+    in-app alert history and as the cooldown record that keeps one fire, seen again
+    every run, from alerting over and over."""
+
+    __tablename__ = "alert_notifications"
+    __table_args__ = (UniqueConstraint("area_id", "detection_id", name="uq_alert_area_detection"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    area_id: Mapped[int] = mapped_column(ForeignKey("alert_areas.id", ondelete="CASCADE"), nullable=False, index=True)
+    detection_id: Mapped[int] = mapped_column(ForeignKey("detections.id"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    #: Null when the email wasn't sent (no sender configured, or SES failed).
+    emailed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class RegionKind(str, enum.Enum):
+    PROVINCE = "province"
+    DEPARTMENT = "department"
+
+
+class Region(Base):
+    """An administrative boundary from IGN (province or department), for per-region
+    statistics. Loaded by `python -m backend.scripts.load_regions`."""
+
+    __tablename__ = "regions"
+    __table_args__ = (UniqueConstraint("kind", "code", name="uq_region_kind_code"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    kind: Mapped[RegionKind] = mapped_column(
+        Enum(RegionKind, name="region_kind", values_callable=lambda obj: [e.value for e in obj]),
+        nullable=False,
+    )
+    #: IGN `in1` code: 2 digits for a province, 5 for a department (the first 2 are
+    #: its province's code).
+    code: Mapped[str] = mapped_column(Text, nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    #: Null for provinces. For departments, the parent province's `code`.
+    province_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    geometry = mapped_column(Geometry("MULTIPOLYGON", srid=4326, spatial_index=True), nullable=False)
