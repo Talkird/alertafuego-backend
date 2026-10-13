@@ -199,3 +199,22 @@
 **Consequences:**
 - The loader has to be run once per database. It has been run on the Supabase DB.
 - Detections outside every region (offshore) are not counted in `/stats/regions`.
+
+### [2026-10-13] — Require an API key to run detections
+
+**Context:** `POST /detect/demo` and `POST /detect/argentina` were open to anyone. Each call runs about a minute of Lambda, uses Earth Engine quota, writes detections and runs alert matching (emails, Telegram). The frontend never calls them.
+**Decision:** Both endpoints require the `DETECT_API_KEY` secret in an `X-API-Key` header, compared in constant time. They answer 401 without it, and 503 when the backend has no key configured (fail closed). Every other endpoint is unchanged: user data needs a Supabase JWT, and detections, stats and the anonymous report list stay public.
+**Alternatives considered:**
+- An API key shipped in the frontend, so that "only the app" can call the API.
+- Supabase login for `/detect` (any signed-up user could run detections).
+- A Lambda reserved-concurrency cap.
+- CloudFront + AWS WAF rate limiting.
+**Rationale:**
+- A key in the frontend is readable by any visitor in the browser's developer tools, so it can't restrict callers. Only a secret kept on servers can.
+- Signing up is open, so a login check wouldn't limit who runs detections.
+- The account's Lambda concurrency limit is 10, and AWS keeps at least 10 unreserved, so a reservation can't be set. The account limit already caps simultaneous runs at 10.
+- WAF costs a few dollars a month and needs CloudFront in front of the function URL. That isn't warranted yet.
+**Consequences:**
+- Running a detection by hand needs the header (`curl -H "X-API-Key: ..."`, or **Authorize** in `/docs`). The future scheduler must hold the key.
+- New GitHub secret `DETECT_API_KEY`, passed to Lambda through Terraform. It is required, so the deploy fails until it's set.
+- Local `.env` needs `DETECT_API_KEY` to run detections.

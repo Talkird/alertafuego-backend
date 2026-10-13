@@ -56,6 +56,7 @@ Note the outputs — you'll need them below:
 |---|---|
 | `AWS_DEPLOY_ROLE_ARN` | bootstrap output `github_actions_deploy_role_arn` |
 | `DATABASE_URL` | Supabase Postgres connection string |
+| `DETECT_API_KEY` | any random string, e.g. `openssl rand -hex 32`. Required in the `X-API-Key` header to run detections (`POST /detect/*`) |
 | `SUPABASE_URL` | Supabase project URL |
 | `EE_SERVICE_ACCOUNT_KEY` | GCP service-account JSON key (see step 3) — leave unset for now if you don't have it yet; Earth Engine calls will 503 until it's added and the workflow re-run |
 

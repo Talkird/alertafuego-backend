@@ -34,6 +34,7 @@ env:
   TF_VAR_alert_email_from: ${{ vars.ALERT_EMAIL_FROM }}
   TF_VAR_earth_engine_project_id: ${{ vars.EARTH_ENGINE_PROJECT_ID }}
   TF_VAR_database_url: ${{ secrets.DATABASE_URL }}
+  TF_VAR_detect_api_key: ${{ secrets.DETECT_API_KEY }}
   TF_VAR_supabase_url: ${{ secrets.SUPABASE_URL }}
   TF_VAR_ee_service_account_key: ${{ secrets.EE_SERVICE_ACCOUNT_KEY }}
 
