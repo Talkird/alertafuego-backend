@@ -2,6 +2,7 @@
 
 Example:
     python -m model.scripts.train_model --limit 200 --epochs 2
+    python -m model.scripts.train_model --batch-size 256 --num-workers 6   # on a GPU
 """
 
 import argparse
@@ -31,6 +32,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=None, help="Overrides the default batch size.")
     parser.add_argument("--lr", type=float, default=None, help="Overrides the default learning rate.")
     parser.add_argument("--seed", type=int, default=None, help="Overrides the default seed.")
+    parser.add_argument(
+        "--num-workers", type=int, default=None, help="Processes loading samples in parallel (default 0: main process)."
+    )
     parser.add_argument("--limit", type=int, default=None, help="Cap samples per split, for smoke tests.")
     return parser.parse_args()
 
@@ -46,6 +50,7 @@ def main() -> None:
             "batch_size": args.batch_size,
             "learning_rate": args.lr,
             "seed": args.seed,
+            "num_workers": args.num_workers,
         }.items()
         if value is not None
     }
@@ -70,9 +75,16 @@ def main() -> None:
     )
     logger.info("Samples - train: %d, val: %d, test: %d", len(train_ds), len(val_ds), len(test_ds))
 
-    train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, num_workers=cfg.num_workers)
-    val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False, num_workers=cfg.num_workers)
-    test_loader = DataLoader(test_ds, batch_size=cfg.batch_size, shuffle=False, num_workers=cfg.num_workers)
+    # Workers are kept between epochs: on Windows each one starts a new Python process.
+    loader_kwargs = {
+        "batch_size": cfg.batch_size,
+        "num_workers": cfg.num_workers,
+        "persistent_workers": cfg.num_workers > 0,
+        "pin_memory": device.type == "cuda",
+    }
+    train_loader = DataLoader(train_ds, shuffle=True, **loader_kwargs)
+    val_loader = DataLoader(val_ds, shuffle=False, **loader_kwargs)
+    test_loader = DataLoader(test_ds, shuffle=False, **loader_kwargs)
 
     model = TinyUNet(in_channels=16, base_channels=cfg.base_channels, depth=cfg.depth).to(device)
     loss_fn = BCEDiceLoss(dice_weight=cfg.dice_weight)
