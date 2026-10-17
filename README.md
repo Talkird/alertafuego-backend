@@ -136,22 +136,25 @@ curl -X POST -H "X-API-Key: $DETECT_API_KEY" <URL backend>/detect/argentina
 
 - `GET /detections` — lectura pura sobre lo ya guardado, sin llamar a Earth Engine,
   rápido. Filtros opcionales por query params: `west/south/east/north` (bbox),
-  `since`/`until` (rango de `image_time`, ISO datetime), `limit` (default 500, tope
-  5000). Devuelve cada fila con forma `{id, lat, lon, probability, image_time,
+  `since`/`until` (rango de `image_time`, ISO datetime), `region_code` o `area_id`
+  (ver Estadísticas), `limit` (default 500, tope 5000). Devuelve cada fila con forma `{id, lat, lon, probability, image_time,
   detected_at, bbox, threshold}` — **este es el endpoint que debería usar el
   frontend** para el mapa y la tabla de logs, no `/detect/*` (esos disparan un scan
   en vivo con efecto secundario, no son para lectura rutinaria).
 
 ### Alertas por zona
 
-Un usuario autenticado define zonas de alerta (punto + radio en km, hasta 200, y una
-probabilidad mínima, default 0.65). Después de cada corrida de `/detect/*`, las
+Un usuario autenticado define zonas de alerta: un punto + radio en km (hasta 200) o
+una provincia o departamento (`region_code`, el código del IGN), con una probabilidad
+mínima (default 0.65). Después de cada corrida de `/detect/*`, las
 detecciones nuevas dentro de una zona activa generan una alerta y un email al dueño.
 Un mismo foco no vuelve a alertar a la misma zona si ya hubo una alerta a menos de
 5 km en las 6 horas anteriores (por `image_time`).
 
 - `GET/POST /alert-areas`, `PATCH/DELETE /alert-areas/{id}` — zonas del usuario.
 - `GET /alerts` — historial de alertas del usuario, cada una con su detección.
+- `GET /regions` — provincias y departamentos (código, nombre, provincia) para elegir
+  una zona o un filtro; `GET /regions/{code}/geometry` — su contorno en GeoJSON.
 
 Los emails salen por Amazon SES desde `ALERT_EMAIL_FROM` y enlazan a
 `FRONTEND_URL/alertas`. Sin `ALERT_EMAIL_FROM` en `.env` no se envían (se loguea un
@@ -195,7 +198,9 @@ Crear el bot y configurarlo en AWS: `terraform/README.md`, paso 6.
 - `GET /stats/hourly` — detecciones por hora del día (hora argentina).
 - `GET /stats/reports` — reportes de usuarios por veredicto y categoría.
 
-Todas aceptan `since`/`until`. `/stats/regions` necesita los límites del IGN cargados
+Todas aceptan `since`/`until` y un lugar, igual que `GET /detections`:
+`region_code` (provincia o departamento) o `area_id` (una zona propia; requiere
+login). Las zonas por región, los filtros por región y `/stats/regions` necesitan los límites del IGN cargados
 en la tabla `regions` (una vez por base de datos, re-correrlo los reemplaza):
 
 ```

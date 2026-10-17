@@ -5,7 +5,7 @@ from uuid import UUID
 
 from geoalchemy2.elements import WKTElement
 from sqlalchemy import func, insert, select
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import Session, aliased, defer
 
 from backend.app.models import (
     AlertArea,
@@ -61,6 +61,7 @@ def list_detections(
     since: datetime | None = None,
     until: datetime | None = None,
     limit: int = 500,
+    place=None,
 ) -> list[tuple[Detection, int, bool]]:
     """Query stored detections, optionally filtered by bbox (west, south, east, north)
     and/or image_time range. Ordered most-recent capture first. Each row is paired
@@ -76,6 +77,7 @@ def list_detections(
         query = query.where(Detection.image_time >= since)
     if until is not None:
         query = query.where(Detection.image_time <= until)
+    query = _place_filter(query, place)
     query = query.order_by(Detection.image_time.desc()).limit(limit)
     return [(detection, count, has_image) for detection, count, has_image in session.execute(query)]
 
@@ -162,17 +164,20 @@ def create_alert_area(
     user_id: UUID,
     email: str,
     name: str,
-    lat: float,
-    lon: float,
-    radius_km: float,
+    lat: float | None,
+    lon: float | None,
+    radius_km: float | None,
+    region_code: str | None,
     min_probability: float,
 ) -> AlertArea:
+    """A circle area (lat, lon, radius_km) or a region one (region_code)."""
     area = AlertArea(
         user_id=user_id,
         email=email,
         name=name,
-        center=WKTElement(f"POINT({lon} {lat})", srid=4326),
+        center=None if region_code else WKTElement(f"POINT({lon} {lat})", srid=4326),
         radius_km=radius_km,
+        region_code=region_code,
         min_probability=min_probability,
     )
     session.add(area)
@@ -183,12 +188,23 @@ def create_alert_area(
 
 def update_alert_area(session: Session, area: AlertArea, email: str, updates: dict) -> AlertArea:
     """Apply a partial update. `updates` may carry lat and lon (both or neither) in
-    place of `center`. The email is refreshed from the caller's token every time."""
+    place of `center`. A region_code clears the circle and a center clears the region,
+    so the area switches kind. The email is refreshed from the caller's token every
+    time. Raises ValueError (and rolls back) if the result is neither a whole circle
+    nor a region."""
     if "lat" in updates or "lon" in updates:
         lat, lon = updates.pop("lat"), updates.pop("lon")
         area.center = WKTElement(f"POINT({lon} {lat})", srid=4326)
+        area.region_code = None
+    if "region_code" in updates:
+        area.center = None
+        area.radius_km = None
     for field, value in updates.items():
         setattr(area, field, value)
+    circle = (area.center is not None, area.radius_km is not None)
+    if circle != ((False, False) if area.region_code else (True, True)):
+        session.rollback()
+        raise ValueError("an area is either a circle (lat, lon and radius_km) or a region (region_code)")
     area.email = email
     session.commit()
     session.refresh(area)
@@ -351,6 +367,52 @@ def user_settings_by_user(session: Session, user_ids: set[UUID]) -> dict[UUID, U
     return {s.user_id: s for s in session.scalars(select(UserSettings).where(UserSettings.user_id.in_(user_ids)))}
 
 
+def region_kind_of(code: str) -> RegionKind:
+    """IGN codes: 2 digits for a province, 5 for a department."""
+    return RegionKind.PROVINCE if len(code) == 2 else RegionKind.DEPARTMENT
+
+
+def list_regions(session: Session) -> list[Region]:
+    """Every province and department, by name (geometry not loaded)."""
+    query = select(Region).options(defer(Region.geometry)).order_by(Region.kind, Region.name)
+    return list(session.scalars(query))
+
+
+def get_region(session: Session, code: str) -> Region | None:
+    query = select(Region).options(defer(Region.geometry)).where(Region.code == code, Region.kind == region_kind_of(code))
+    return session.scalar(query)
+
+
+def region_geojson(session: Session, code: str) -> str | None:
+    """A region's outline as GeoJSON, simplified further (~500 m) for drawing on a map."""
+    query = select(func.ST_AsGeoJSON(func.ST_SimplifyPreserveTopology(Region.geometry, 0.005), 4)).where(
+        Region.code == code, Region.kind == region_kind_of(code)
+    )
+    return session.scalar(query)
+
+
+def detection_place_filter(region_code: str | None = None, area: AlertArea | None = None):
+    """A WHERE condition keeping detections inside a region or an alert area (circle
+    or region), or None for no place filter."""
+    if area is not None and area.region_code is not None:
+        region_code = area.region_code
+    if region_code is not None:
+        geometry = (
+            select(Region.geometry)
+            .where(Region.code == region_code, Region.kind == region_kind_of(region_code))
+            .scalar_subquery()
+        )
+        return func.ST_Contains(geometry, Detection.location)
+    if area is not None:
+        center = select(AlertArea.center).where(AlertArea.id == area.id).scalar_subquery()
+        return func.ST_DWithin(center, func.geography(Detection.location), area.radius_km * 1000)
+    return None
+
+
+def _place_filter(query, place):
+    return query if place is None else query.where(place)
+
+
 def _time_filters(query, since: datetime | None, until: datetime | None):
     if since is not None:
         query = query.where(Detection.image_time >= since)
@@ -360,10 +422,11 @@ def _time_filters(query, since: datetime | None, until: datetime | None):
 
 
 def detection_counts_by_region(
-    session: Session, kind: RegionKind, since: datetime | None, until: datetime | None
+    session: Session, kind: RegionKind, since: datetime | None, until: datetime | None, place=None
 ) -> list[tuple[str, str, str | None, int, float]]:
     """(code, name, province name, detection count, max probability) for each region
-    of this kind that has at least one detection in range, busiest first."""
+    of this kind that has at least one detection in range (and in `place`, from
+    detection_place_filter), busiest first."""
     province = aliased(Region)
     query = (
         select(Region.code, Region.name, province.name, func.count(Detection.id), func.max(Detection.probability))
@@ -373,19 +436,21 @@ def detection_counts_by_region(
         .group_by(Region.code, Region.name, province.name)
         .order_by(func.count(Detection.id).desc(), Region.name)
     )
-    return [tuple(row) for row in session.execute(_time_filters(query, since, until))]
+    return [tuple(row) for row in session.execute(_place_filter(_time_filters(query, since, until), place))]
 
 
-def detection_counts_by_hour(session: Session, since: datetime | None, until: datetime | None) -> dict[int, int]:
+def detection_counts_by_hour(
+    session: Session, since: datetime | None, until: datetime | None, place=None
+) -> dict[int, int]:
     """Detection count per hour of the day (0-23), Argentina time (UTC-3, no DST).
     image_time is stored as naive UTC. Hours with no detections are omitted."""
     hour = func.extract("hour", Detection.image_time - timedelta(hours=3))
     query = select(hour, func.count(Detection.id)).group_by(hour)
-    return {int(h): count for h, count in session.execute(_time_filters(query, since, until))}
+    return {int(h): count for h, count in session.execute(_place_filter(_time_filters(query, since, until), place))}
 
 
 def report_counts(
-    session: Session, since: datetime | None, until: datetime | None
+    session: Session, since: datetime | None, until: datetime | None, place=None
 ) -> list[tuple[ReportVerdict, ReportCategory | None, int]]:
     """Report count per (verdict, category), over reports on detections in range."""
     query = (
@@ -393,4 +458,4 @@ def report_counts(
         .join(Detection, Detection.id == DetectionReport.detection_id)
         .group_by(DetectionReport.verdict, DetectionReport.category)
     )
-    return [tuple(row) for row in session.execute(_time_filters(query, since, until))]
+    return [tuple(row) for row in session.execute(_place_filter(_time_filters(query, since, until), place))]

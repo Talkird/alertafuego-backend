@@ -106,22 +106,41 @@ class StoredDetection(BaseModel):
     has_image: bool
 
 
+#: An IGN region code: 2 digits for a province, 5 for a department.
+REGION_CODE_PATTERN = r"^\d{2}(\d{3})?$"
+
+
 class AlertAreaCreate(BaseModel):
+    """A circle (lat, lon and radius_km) or a province or department (region_code)."""
+
     name: str = Field(min_length=1, max_length=100)
-    lat: float = Field(ge=-90, le=90)
-    lon: float = Field(ge=-180, le=180)
-    radius_km: float = Field(gt=0, le=200)
+    lat: float | None = Field(None, ge=-90, le=90)
+    lon: float | None = Field(None, ge=-180, le=180)
+    radius_km: float | None = Field(None, gt=0, le=200)
+    region_code: str | None = Field(None, pattern=REGION_CODE_PATTERN)
     #: Above the model's 0.5 detection threshold by default, to cut false alarms.
     min_probability: float = Field(0.65, ge=0, le=1)
 
+    @model_validator(mode="after")
+    def _circle_or_region(self) -> "AlertAreaCreate":
+        circle = (self.lat, self.lon, self.radius_km)
+        if self.region_code is None and None in circle:
+            raise ValueError("lat, lon and radius_km are required for a circle area")
+        if self.region_code is not None and circle != (None, None, None):
+            raise ValueError("a region area takes region_code, not lat, lon or radius_km")
+        return self
+
 
 class AlertAreaUpdate(BaseModel):
-    """Partial update - fields left unset are unchanged. lat and lon go together."""
+    """Partial update - fields left unset are unchanged. lat and lon go together.
+    Setting region_code turns a circle area into a region one; turning a region area
+    into a circle takes lat, lon and radius_km."""
 
     name: str | None = Field(None, min_length=1, max_length=100)
     lat: float | None = Field(None, ge=-90, le=90)
     lon: float | None = Field(None, ge=-180, le=180)
     radius_km: float | None = Field(None, gt=0, le=200)
+    region_code: str | None = Field(None, pattern=REGION_CODE_PATTERN)
     min_probability: float | None = Field(None, ge=0, le=1)
     active: bool | None = None
 
@@ -129,16 +148,30 @@ class AlertAreaUpdate(BaseModel):
     def _lat_lon_together(self) -> "AlertAreaUpdate":
         if (self.lat is None) != (self.lon is None):
             raise ValueError("lat and lon must be updated together")
+        if self.region_code is not None and (self.lat is not None or self.radius_km is not None):
+            raise ValueError("a region area takes region_code, not lat, lon or radius_km")
         return self
+
+
+class RegionResponse(BaseModel):
+    """A province or department."""
+
+    code: str
+    name: str
+    #: The department's province code. Null for provinces.
+    province_code: str | None
 
 
 class AlertAreaResponse(BaseModel):
     id: int
     name: str
     email: str
-    lat: float
-    lon: float
-    radius_km: float
+    #: lat, lon and radius_km: set for a circle area, null for a region one.
+    lat: float | None
+    lon: float | None
+    radius_km: float | None
+    #: Set for a region area, null for a circle one.
+    region: RegionResponse | None
     min_probability: float
     active: bool
     created_at: datetime

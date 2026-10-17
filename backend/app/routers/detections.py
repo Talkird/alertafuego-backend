@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from backend.app.crud import get_detection_image, list_detections
 from backend.app.db import get_db
 from backend.app.models import Detection
+from backend.app.routers.regions import detection_place
 from backend.app.schemas import BBoxSchema, StoredDetection
 
 router = APIRouter(prefix="/detections")
@@ -42,13 +43,16 @@ def get_detections(
     since: datetime | None = Query(None),
     until: datetime | None = Query(None),
     limit: int = Query(500, le=MAX_LIMIT),
+    place=Depends(detection_place),
     db: Session = Depends(get_db),
 ) -> list[StoredDetection]:
+    """Optionally filtered by bbox, image_time range and place: a province or
+    department (region_code) or one of the signed-in user's alert areas (area_id)."""
     bbox = None
     if None not in (west, south, east, north):
         bbox = (west, south, east, north)
 
-    rows = list_detections(db, bbox=bbox, since=since, until=until, limit=limit)
+    rows = list_detections(db, bbox=bbox, since=since, until=until, limit=limit, place=place)
     return [to_stored_detection(row, report_count, has_image) for row, report_count, has_image in rows]
 
 
