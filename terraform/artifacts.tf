@@ -1,9 +1,10 @@
-# Holds the model checkpoint (model_best.pt, norm_stats.json). model/checkpoints/
+# Holds the model checkpoint (model_best.pt, norm_stats.json, model_config.json). model/checkpoints/
 # is gitignored, so it never reaches GitHub Actions via checkout - CI instead
 # downloads it from here before building the Docker image. Upload once manually:
 #
 #   aws s3 cp model/checkpoints/model_best.pt s3://<bucket>/model_best.pt
 #   aws s3 cp model/checkpoints/norm_stats.json s3://<bucket>/norm_stats.json
+#   aws s3 cp model/checkpoints/model_config.json s3://<bucket>/model_config.json
 
 resource "aws_s3_bucket" "model_artifacts" {
   bucket = "${var.project_name}-model-artifacts-${data.aws_caller_identity.current.account_id}"

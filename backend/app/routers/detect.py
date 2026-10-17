@@ -16,7 +16,7 @@ from backend.app.schemas import BBoxSchema, Detection, DetectionResponse
 from model.data_pipeline.config import BBox
 from model.inference.raster_fetch import NoImageAvailableError
 from model.inference.service import DetectionResult, InferenceContext, run_detection
-from model.training.config import default_config as default_training_config
+from model.training.config import load_model_config
 
 router = APIRouter(prefix="/detect", dependencies=[Depends(require_detect_key)])
 
@@ -43,7 +43,8 @@ def _to_response(result: DetectionResult) -> DetectionResponse:
 
 
 def _run(ctx: InferenceContext, bbox: BBox, db: Session) -> DetectionResponse:
-    threshold = default_training_config().seg_threshold
+    # The threshold chosen on val when the model was trained.
+    threshold = load_model_config(ctx.cfg.checkpoint_dir).threshold
     try:
         result = run_detection(ctx, bbox, threshold, debug_image_dir=_debug_image_dir())
     except (ee.EEException, NoImageAvailableError) as exc:

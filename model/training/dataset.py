@@ -23,6 +23,19 @@ def center_crop(array: np.ndarray, size: int | tuple[int, int]) -> np.ndarray:
     return array[top : top + target_height, left : left + target_width]
 
 
+def shift(patch: np.ndarray, mask: np.ndarray, dy: int, dx: int) -> tuple[np.ndarray, np.ndarray]:
+    """Move patch and mask by (dy, dx) pixels, filling the uncovered border with 0
+    (the band mean after normalization, as normalize_patch also fills missing data)."""
+    height, width = mask.shape
+    shifted_patch = np.zeros_like(patch)
+    shifted_mask = np.zeros_like(mask)
+    src_y, dst_y = slice(max(0, -dy), height - max(0, dy)), slice(max(0, dy), height - max(0, -dy))
+    src_x, dst_x = slice(max(0, -dx), width - max(0, dx)), slice(max(0, dx), width - max(0, -dx))
+    shifted_patch[:, dst_y, dst_x] = patch[:, src_y, src_x]
+    shifted_mask[dst_y, dst_x] = mask[src_y, src_x]
+    return shifted_patch, shifted_mask
+
+
 def _random_augment(patch: np.ndarray, mask: np.ndarray, rng: random.Random) -> tuple[np.ndarray, np.ndarray]:
     """Apply the same random flip/rotation to patch and mask - both are geometric,
     physically valid transforms for a satellite patch with no canonical orientation."""
@@ -60,12 +73,17 @@ class FirePatchDataset(Dataset):
         augment: bool,
         limit: int | None = None,
         seed: int = 0,
+        max_shift: int = 0,
     ) -> None:
+        """augment: random flips/rotations and a random shift of up to max_shift
+        pixels (train). Without it, max_shift still applies, as a fixed shift per
+        sample, so val/test scores are repeatable."""
         self.dataset_dir = dataset_dir
         self.band_stats = band_stats
         self.crop_size = crop_size
         self.augment = augment
-        self._rng = random.Random(seed)
+        self.max_shift = max_shift
+        self.seed = seed
         self.files = list_split_files(manifest_path, dataset_dir, split, limit, seed)
 
     def __len__(self) -> int:
@@ -76,6 +94,12 @@ class FirePatchDataset(Dataset):
         patch = center_crop(data["patch"], self.crop_size)
         mask = center_crop(data["mask"], self.crop_size).astype(np.float32)
         patch = normalize_patch(patch, self.band_stats)
+        # Training draws from the `random` module, which DataLoader seeds differently
+        # in each worker; a per-dataset Random would repeat the same sequence in all.
+        rng = random if self.augment else random.Random(self.seed * 1_000_003 + index)
         if self.augment:
-            patch, mask = _random_augment(patch, mask, self._rng)
+            patch, mask = _random_augment(patch, mask, rng)
+        if self.max_shift:
+            dy, dx = (rng.randint(-self.max_shift, self.max_shift) for _ in range(2))
+            patch, mask = shift(patch, mask, dy, dx)
         return torch.from_numpy(patch).float(), torch.from_numpy(mask).float()

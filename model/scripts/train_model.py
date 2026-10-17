@@ -3,9 +3,15 @@
 Example:
     python -m model.scripts.train_model --limit 200 --epochs 2
     python -m model.scripts.train_model --batch-size 256 --num-workers 6   # on a GPU
+    python -m model.scripts.train_model --base-channels 32 --checkpoint-dir model/checkpoints/c32
+
+After training, the threshold with the best val F1 is saved with the checkpoint
+(model_config.json, read by inference) and test is scored once at it. results.json
+sums up the run.
 """
 
 import argparse
+import json
 import logging
 from dataclasses import replace
 from pathlib import Path
@@ -14,12 +20,15 @@ import torch
 from torch import optim
 from torch.utils.data import DataLoader
 
-from model.training.config import default_config
+from model.training.config import ModelConfig, default_config, save_model_config
 from model.training.dataset import FirePatchDataset, list_split_files
 from model.training.losses import BCEDiceLoss
 from model.training.model import TinyUNet
 from model.training.normalization import compute_band_stats, save_band_stats
-from model.training.train import evaluate, fit, plot_training_curves
+from model.training.train import evaluate, evaluate_thresholds, fit, plot_training_curves
+
+#: Candidates for the segmentation threshold, chosen on val after training.
+THRESHOLDS = [round(0.05 * i, 2) for i in range(2, 19)]  # 0.10 ... 0.90
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +43,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=None, help="Overrides the default seed.")
     parser.add_argument(
         "--num-workers", type=int, default=None, help="Processes loading samples in parallel (default 0: main process)."
+    )
+    parser.add_argument("--base-channels", type=int, default=None, help="Model width (default 16; 32 or 64 on a GPU).")
+    parser.add_argument("--depth", type=int, default=None, help="Downsampling stages (default 3).")
+    parser.add_argument(
+        "--max-shift", type=int, default=None, help="Max pixels patches are shifted off-center (default 8; 0: none)."
     )
     parser.add_argument("--limit", type=int, default=None, help="Cap samples per split, for smoke tests.")
     return parser.parse_args()
@@ -51,6 +65,9 @@ def main() -> None:
             "learning_rate": args.lr,
             "seed": args.seed,
             "num_workers": args.num_workers,
+            "base_channels": args.base_channels,
+            "depth": args.depth,
+            "max_shift": args.max_shift,
         }.items()
         if value is not None
     }
@@ -64,15 +81,26 @@ def main() -> None:
     band_stats = compute_band_stats(train_files)
     save_band_stats(band_stats, cfg.checkpoint_dir / "norm_stats.json")
 
-    train_ds = FirePatchDataset(
-        manifest_path, args.dataset_dir, "train", band_stats, cfg.crop_size, augment=True, limit=args.limit, seed=cfg.seed
-    )
-    val_ds = FirePatchDataset(
-        manifest_path, args.dataset_dir, "val", band_stats, cfg.crop_size, augment=False, limit=args.limit, seed=cfg.seed
-    )
-    test_ds = FirePatchDataset(
-        manifest_path, args.dataset_dir, "test", band_stats, cfg.crop_size, augment=False, limit=args.limit, seed=cfg.seed
-    )
+    def dataset(split: str, augment: bool, max_shift: int) -> FirePatchDataset:
+        return FirePatchDataset(
+            manifest_path,
+            args.dataset_dir,
+            split,
+            band_stats,
+            cfg.crop_size,
+            augment=augment,
+            limit=args.limit,
+            seed=cfg.seed,
+            max_shift=max_shift,
+        )
+
+    # Val and test are shifted too (fixed per sample), so scores reflect fires
+    # anywhere in a tile, as at inference. Centered test: comparable with runs
+    # trained before shifting existed.
+    train_ds = dataset("train", augment=True, max_shift=cfg.max_shift)
+    val_ds = dataset("val", augment=False, max_shift=cfg.max_shift)
+    test_ds = dataset("test", augment=False, max_shift=cfg.max_shift)
+    test_centered_ds = dataset("test", augment=False, max_shift=0)
     logger.info("Samples - train: %d, val: %d, test: %d", len(train_ds), len(val_ds), len(test_ds))
 
     # Workers are kept between epochs: on Windows each one starts a new Python process.
@@ -85,16 +113,39 @@ def main() -> None:
     train_loader = DataLoader(train_ds, shuffle=True, **loader_kwargs)
     val_loader = DataLoader(val_ds, shuffle=False, **loader_kwargs)
     test_loader = DataLoader(test_ds, shuffle=False, **loader_kwargs)
+    test_centered_loader = DataLoader(test_centered_ds, shuffle=False, **loader_kwargs)
 
     model = TinyUNet(in_channels=16, base_channels=cfg.base_channels, depth=cfg.depth).to(device)
+    logger.info("Model parameters: %d", sum(p.numel() for p in model.parameters()))
     loss_fn = BCEDiceLoss(dice_weight=cfg.dice_weight)
     optimizer = optim.Adam(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
 
     best_model_path = fit(model, train_loader, val_loader, cfg, optimizer, loss_fn, device)
 
     model.load_state_dict(torch.load(best_model_path, map_location=device))
-    test_metrics = evaluate(model, test_loader, loss_fn, device, cfg.seg_threshold)
+
+    # The threshold is picked on val; test is scored once, at it - choosing it on
+    # test would overstate the result.
+    val_sweep = evaluate_thresholds(model, val_loader, loss_fn, device, THRESHOLDS)
+    best = max(val_sweep, key=lambda m: m["f1"])
+    threshold = best["threshold"]
+    logger.info("Best val threshold %.2f: f1=%.4f f1_tol=%.4f", threshold, best["f1"], best["f1_tol"])
+    save_model_config(ModelConfig(cfg.base_channels, cfg.depth, threshold), cfg.checkpoint_dir)
+
+    test_metrics = evaluate(model, test_loader, loss_fn, device, threshold)
+    test_centered_metrics = evaluate(model, test_centered_loader, loss_fn, device, threshold)
     logger.info("Test metrics: %s", test_metrics)
+    logger.info("Test metrics, centered patches: %s", test_centered_metrics)
+
+    results = {
+        "config": {key: str(value) if isinstance(value, Path) else value for key, value in vars(cfg).items()},
+        "parameters": sum(p.numel() for p in model.parameters()),
+        "threshold": threshold,
+        "val_sweep": val_sweep,
+        "test": test_metrics,
+        "test_centered": test_centered_metrics,
+    }
+    (cfg.checkpoint_dir / "results.json").write_text(json.dumps(results, indent=2) + "\n")
 
     plot_training_curves(cfg.checkpoint_dir / "metrics.csv", cfg.checkpoint_dir / "training_curves.png")
 

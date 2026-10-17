@@ -14,7 +14,7 @@ deployed by `.github/workflows/terraform-deploy.yml` on every push to `main`.
   JWT auth per-route, same as today).
 - **Secrets Manager** holds the Google service-account key Earth Engine needs
   (no interactive `earthengine authenticate` login exists inside Lambda).
-- **S3 artifacts bucket** holds `model_best.pt` / `norm_stats.json`, since
+- **S3 artifacts bucket** holds `model_best.pt` / `norm_stats.json` / `model_config.json`, since
   `model/checkpoints/` is gitignored and never reaches CI via checkout.
 - `DATABASE_URL` / `SUPABASE_URL` / `EARTH_ENGINE_PROJECT_ID` are passed straight
   through as (encrypted-at-rest) Lambda environment variables.
@@ -80,6 +80,7 @@ step will fail until you've uploaded the files once:
 ```bash
 aws s3 cp model/checkpoints/model_best.pt s3://<model_artifacts_bucket_output>/model_best.pt
 aws s3 cp model/checkpoints/norm_stats.json s3://<model_artifacts_bucket_output>/norm_stats.json
+aws s3 cp model/checkpoints/model_config.json s3://<model_artifacts_bucket_output>/model_config.json
 ```
 
 (`model_artifacts_bucket` is a terraform output — run `terraform output` in

@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from model.training.config import default_config as default_training_config
+from model.training.config import load_model_config
 from model.training.model import TinyUNet
 from model.training.normalization import BandStats, normalize_patch
 
@@ -15,10 +15,10 @@ IN_CHANNELS = 16
 
 
 def load_model(checkpoint_path: Path, device: torch.device) -> TinyUNet:
-    """Reuses base_channels/depth from training config rather than duplicating those
-    numbers here - if the training architecture changes, this stays consistent."""
-    training_cfg = default_training_config()
-    model = TinyUNet(in_channels=IN_CHANNELS, base_channels=training_cfg.base_channels, depth=training_cfg.depth)
+    """Builds the model at the size it was trained with (the checkpoint's
+    model_config.json), so a larger model deploys by uploading files alone."""
+    model_cfg = load_model_config(checkpoint_path.parent)
+    model = TinyUNet(in_channels=IN_CHANNELS, base_channels=model_cfg.base_channels, depth=model_cfg.depth)
     model.load_state_dict(torch.load(checkpoint_path, map_location=device))
     model.eval()
     return model.to(device)

@@ -99,10 +99,23 @@ python -m model.scripts.train_model --epochs 30
 
 Usa el manifest combinado (`model/dataset/manifest.csv`, ver `merge_datasets`
 arriba). Args útiles: `--dataset-dir`, `--checkpoint-dir` (default `model/checkpoints`),
-`--batch-size`, `--lr`, `--limit` (subset chico para smoke test). Corre en GPU si hay
-CUDA disponible (`torch.cuda.is_available()`), si no cae a CPU automáticamente. Guarda
-`model_best.pt`, `norm_stats.json`, `metrics.csv` y `training_curves.png` en
-`checkpoint_dir`.
+`--batch-size`, `--lr`, `--num-workers`, `--base-channels`/`--depth` (tamaño del modelo),
+`--max-shift` (default 8: desplaza los parches para que el foco no quede siempre en el
+centro; 0 lo apaga), `--limit` (subset chico para smoke test). Corre en GPU si hay CUDA
+disponible (con precisión mixta), si no cae a CPU automáticamente. El learning rate baja
+con un schedule coseno a lo largo de las épocas.
+
+Al terminar elige el umbral con mejor F1 en val, evalúa test una sola vez con ese
+umbral (desplazado y centrado) y guarda en `checkpoint_dir`: `model_best.pt`,
+`norm_stats.json`, `model_config.json` (tamaño del modelo y umbral, lo lee la
+inferencia), `results.json` (resumen de la corrida), `metrics.csv` y
+`training_curves.png`. Las métricas incluyen `f1_tol`: el F1 aceptando un píxel (2 km)
+de diferencia entre la predicción y el foco, el error típico de geolocalización
+GOES-VIIRS. `python -m model.scripts.evaluate_model` re-evalúa un checkpoint en varios
+umbrales.
+
+Para desplegar un modelo, subir los tres archivos al bucket de artefactos (ver
+`terraform/README.md`).
 
 ## Backend / API (fases 3-4)
 
