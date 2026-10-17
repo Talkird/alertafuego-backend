@@ -52,10 +52,11 @@ def _matches(session: Session, detection_ids: list[int]) -> list[tuple[AlertArea
         .outerjoin(Region, Region.code == AlertArea.region_code)
         .join(
             Detection,
-            # A circle area has no Region row and a region area no center, so only one
-            # of these can be true.
+            # An area has exactly one shape (the others are null), so only one of
+            # these can be true.
             or_(
                 func.ST_DWithin(AlertArea.center, func.geography(Detection.location), AlertArea.radius_km * 1000),
+                func.ST_Contains(AlertArea.polygon, Detection.location),
                 func.ST_Contains(Region.geometry, Detection.location),
             ),
         )

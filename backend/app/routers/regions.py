@@ -1,36 +1,16 @@
-"""Argentina's provinces and departments (IGN), for choosing a region alert area or
-a statistics filter, and the place filter that the detection and stats endpoints
-share."""
+"""The place filter that the detection and stats endpoints share: a province or
+department (IGN code) or one of the signed-in user's alert areas. The frontend ships
+the list of regions itself (backend.scripts.export_regions)."""
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from backend.app.auth import get_optional_user
-from backend.app.crud import detection_place_filter, get_own_alert_area, get_region, list_regions, region_geojson
+from backend.app.crud import detection_place_filter, get_own_alert_area, get_region
 from backend.app.db import get_db
-from backend.app.schemas import REGION_CODE_PATTERN, RegionResponse
-
-router = APIRouter(prefix="/regions")
-
-
-@router.get("", response_model=list[RegionResponse])
-def get_regions(db: Session = Depends(get_db)) -> list[RegionResponse]:
-    """Every province and then every department, by name. Empty until the regions are
-    loaded (backend.scripts.load_regions)."""
-    return [
-        RegionResponse(code=r.code, name=r.name, province_code=r.province_code) for r in list_regions(db)
-    ]
-
-
-@router.get("/{code}/geometry")
-def get_region_geometry(code: str, db: Session = Depends(get_db)) -> Response:
-    """The region's outline (GeoJSON geometry), simplified for drawing on a map."""
-    geojson = region_geojson(db, code)
-    if geojson is None:
-        raise HTTPException(status_code=404, detail="Region not found")
-    return Response(content=geojson, media_type="application/geo+json")
+from backend.app.schemas import REGION_CODE_PATTERN
 
 
 def detection_place(

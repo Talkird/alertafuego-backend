@@ -1,5 +1,6 @@
 """Region alert endpoints: an authenticated user manages their alert areas (a point
-plus a radius, or a province or department) and reads the alerts raised in them. Alerts are raised by
+plus a radius, a polygon, or a province or department) and reads the alerts raised
+in them. Alerts are raised by
 backend.app.alerts after each detection run, and emailed to the area's owner."""
 
 from uuid import UUID
@@ -14,6 +15,7 @@ from backend.app.crud import (
     delete_alert_area,
     get_own_alert_area,
     get_region,
+    polygon_problem,
     list_alert_areas,
     list_alerts,
     update_alert_area,
@@ -41,6 +43,10 @@ def _to_response(db: Session, area: AlertArea, alert_email: str | None) -> Alert
         lat=point.y if point else None,
         lon=point.x if point else None,
         radius_km=area.radius_km,
+        # Stored closed (first corner repeated at the end); returned open, as sent.
+        polygon=[(lat, lon) for lon, lat in to_shape(area.polygon).exterior.coords[:-1]]
+        if area.polygon is not None
+        else None,
         region=RegionResponse(code=region.code, name=region.name, province_code=region.province_code)
         if region
         else None,
@@ -56,9 +62,11 @@ def _alert_email(db: Session, user_id: UUID) -> str | None:
     return settings.alert_email if settings else None
 
 
-def _check_region(db: Session, region_code: str | None) -> None:
+def _check_shape(db: Session, region_code: str | None, polygon: list[tuple[float, float]] | None) -> None:
     if region_code is not None and get_region(db, region_code) is None:
         raise HTTPException(status_code=404, detail="Region not found")
+    if polygon is not None and (problem := polygon_problem(db, polygon)):
+        raise HTTPException(status_code=422, detail=problem)
 
 
 def _own_area(db: Session, area_id: int, user_id: UUID) -> AlertArea:
@@ -81,7 +89,7 @@ def post_alert_area(
     user: UserWithEmail = Depends(get_current_user_with_email),
     db: Session = Depends(get_db),
 ) -> AlertAreaResponse:
-    _check_region(db, payload.region_code)
+    _check_shape(db, payload.region_code, payload.polygon)
     area = create_alert_area(db, user.id, user.email, **payload.model_dump())
     return _to_response(db, area, _alert_email(db, user.id))
 
@@ -98,7 +106,7 @@ def patch_alert_area(
         raise HTTPException(status_code=400, detail="No fields to update")
     if any(updates.get(field) is None for field in updates):
         raise HTTPException(status_code=400, detail="Fields can't be set to null")
-    _check_region(db, updates.get("region_code"))
+    _check_shape(db, updates.get("region_code"), updates.get("polygon"))
     try:
         area = update_alert_area(db, _own_area(db, area_id, user.id), user.email, updates)
     except ValueError as exc:

@@ -144,17 +144,16 @@ curl -X POST -H "X-API-Key: $DETECT_API_KEY" <URL backend>/detect/argentina
 
 ### Alertas por zona
 
-Un usuario autenticado define zonas de alerta: un punto + radio en km (hasta 200) o
-una provincia o departamento (`region_code`, el código del IGN), con una probabilidad
-mínima (default 0.65). Después de cada corrida de `/detect/*`, las
+Un usuario autenticado define zonas de alerta: un punto + radio en km (hasta 200), un
+polígono (`polygon`, de 3 a 200 vértices `[lat, lon]`, sin cruces y de hasta
+~125.000 km², lo mismo que el círculo más grande) o una provincia o departamento
+(`region_code`, el código del IGN), con una probabilidad mínima (default 0.65). Después de cada corrida de `/detect/*`, las
 detecciones nuevas dentro de una zona activa generan una alerta y un email al dueño.
 Un mismo foco no vuelve a alertar a la misma zona si ya hubo una alerta a menos de
 5 km en las 6 horas anteriores (por `image_time`).
 
 - `GET/POST /alert-areas`, `PATCH/DELETE /alert-areas/{id}` — zonas del usuario.
 - `GET /alerts` — historial de alertas del usuario, cada una con su detección.
-- `GET /regions` — provincias y departamentos (código, nombre, provincia) para elegir
-  una zona o un filtro; `GET /regions/{code}/geometry` — su contorno en GeoJSON.
 
 Los emails salen por Amazon SES desde `ALERT_EMAIL_FROM` y enlazan a
 `FRONTEND_URL/alertas`. Sin `ALERT_EMAIL_FROM` en `.env` no se envían (se loguea un
@@ -197,6 +196,9 @@ Crear el bot y configurarlo en AWS: `terraform/README.md`, paso 6.
   departamento.
 - `GET /stats/hourly` — detecciones por hora del día (hora argentina).
 - `GET /stats/reports` — reportes de usuarios por veredicto y categoría.
+- `GET /stats/recurrence` — recurrencia: celdas de ~2 km (0,02°) con detecciones, cada
+  una con cuántos días distintos (y años) se quemó. Sin `since`/`until`, sobre todo el
+  historial guardado.
 
 Todas aceptan `since`/`until` y un lugar, igual que `GET /detections`:
 `region_code` (provincia o departamento) o `area_id` (una zona propia; requiere
@@ -205,6 +207,14 @@ en la tabla `regions` (una vez por base de datos, re-correrlo los reemplaza):
 
 ```
 python -m backend.scripts.load_regions
+```
+
+El frontend trae su propia copia de la lista y de los contornos (para elegir zonas y
+filtros sin pedirlos a la API). Después de cargar o actualizar las regiones, regenerarla
+y commitearla en el frontend:
+
+```
+python -m backend.scripts.export_regions ../alertafuego-frontend
 ```
 
 Docs interactivas en `/docs`. Ver esquema de la tabla `detections` y por qué se

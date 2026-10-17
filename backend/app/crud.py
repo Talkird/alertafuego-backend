@@ -167,16 +167,19 @@ def create_alert_area(
     lat: float | None,
     lon: float | None,
     radius_km: float | None,
+    polygon: list[tuple[float, float]] | None,
     region_code: str | None,
     min_probability: float,
 ) -> AlertArea:
-    """A circle area (lat, lon, radius_km) or a region one (region_code)."""
+    """A circle area (lat, lon, radius_km), a polygon one, or a region one
+    (region_code). Exactly one is given (schemas.AlertAreaCreate checks it)."""
     area = AlertArea(
         user_id=user_id,
         email=email,
         name=name,
-        center=None if region_code else WKTElement(f"POINT({lon} {lat})", srid=4326),
+        center=WKTElement(f"POINT({lon} {lat})", srid=4326) if lat is not None else None,
         radius_km=radius_km,
+        polygon=polygon_element(polygon) if polygon else None,
         region_code=region_code,
         min_probability=min_probability,
     )
@@ -188,27 +191,51 @@ def create_alert_area(
 
 def update_alert_area(session: Session, area: AlertArea, email: str, updates: dict) -> AlertArea:
     """Apply a partial update. `updates` may carry lat and lon (both or neither) in
-    place of `center`. A region_code clears the circle and a center clears the region,
-    so the area switches kind. The email is refreshed from the caller's token every
-    time. Raises ValueError (and rolls back) if the result is neither a whole circle
-    nor a region."""
+    place of `center`, and polygon as [lat, lon] corners. Setting one shape clears the
+    others, so the area switches kind. The email is refreshed from the caller's token
+    every time. Raises ValueError (and rolls back) if the result isn't exactly one whole
+    shape (say, a region switched to a circle without a radius)."""
     if "lat" in updates or "lon" in updates:
         lat, lon = updates.pop("lat"), updates.pop("lon")
         area.center = WKTElement(f"POINT({lon} {lat})", srid=4326)
-        area.region_code = None
+        area.polygon = area.region_code = None
+    if "polygon" in updates:
+        area.polygon = polygon_element(updates.pop("polygon"))
+        area.center = area.radius_km = area.region_code = None
     if "region_code" in updates:
-        area.center = None
-        area.radius_km = None
+        area.center = area.radius_km = area.polygon = None
     for field, value in updates.items():
         setattr(area, field, value)
-    circle = (area.center is not None, area.radius_km is not None)
-    if circle != ((False, False) if area.region_code else (True, True)):
+    has = [area.center is not None, area.polygon is not None, area.region_code is not None]
+    if sum(has) != 1 or (area.center is not None) != (area.radius_km is not None):
         session.rollback()
-        raise ValueError("an area is either a circle (lat, lon and radius_km) or a region (region_code)")
+        raise ValueError("an area is exactly one of: a circle (lat, lon and radius_km), a polygon, a region")
     area.email = email
     session.commit()
     session.refresh(area)
     return area
+
+
+def polygon_element(points: list[tuple[float, float]]) -> WKTElement:
+    """A closed WKT polygon from [lat, lon] corners."""
+    ring = [*points, points[0]]
+    return WKTElement("POLYGON((" + ",".join(f"{lon} {lat}" for lat, lon in ring) + "))", srid=4326)
+
+
+#: As large as the largest circle (200 km radius), so neither is a way around the other.
+MAX_POLYGON_AREA_KM2 = 3.1416 * 200**2
+
+
+def polygon_problem(session: Session, points: list[tuple[float, float]]) -> str | None:
+    """Why this polygon can't be an alert area (it crosses itself, or it's too big),
+    or None if it can."""
+    polygon = func.ST_GeomFromEWKT(f"SRID=4326;{polygon_element(points).data}")
+    valid, area_m2 = session.execute(select(func.ST_IsValid(polygon), func.ST_Area(func.geography(polygon)))).one()
+    if not valid:
+        return "The polygon's sides cross each other"
+    if area_m2 / 1e6 > MAX_POLYGON_AREA_KM2:
+        return f"The polygon is larger than {MAX_POLYGON_AREA_KM2:,.0f} km²"
+    return None
 
 
 def delete_alert_area(session: Session, area: AlertArea) -> None:
@@ -372,28 +399,14 @@ def region_kind_of(code: str) -> RegionKind:
     return RegionKind.PROVINCE if len(code) == 2 else RegionKind.DEPARTMENT
 
 
-def list_regions(session: Session) -> list[Region]:
-    """Every province and department, by name (geometry not loaded)."""
-    query = select(Region).options(defer(Region.geometry)).order_by(Region.kind, Region.name)
-    return list(session.scalars(query))
-
-
 def get_region(session: Session, code: str) -> Region | None:
     query = select(Region).options(defer(Region.geometry)).where(Region.code == code, Region.kind == region_kind_of(code))
     return session.scalar(query)
 
 
-def region_geojson(session: Session, code: str) -> str | None:
-    """A region's outline as GeoJSON, simplified further (~500 m) for drawing on a map."""
-    query = select(func.ST_AsGeoJSON(func.ST_SimplifyPreserveTopology(Region.geometry, 0.005), 4)).where(
-        Region.code == code, Region.kind == region_kind_of(code)
-    )
-    return session.scalar(query)
-
-
 def detection_place_filter(region_code: str | None = None, area: AlertArea | None = None):
-    """A WHERE condition keeping detections inside a region or an alert area (circle
-    or region), or None for no place filter."""
+    """A WHERE condition keeping detections inside a region or an alert area (circle,
+    polygon or region), or None for no place filter."""
     if area is not None and area.region_code is not None:
         region_code = area.region_code
     if region_code is not None:
@@ -403,6 +416,9 @@ def detection_place_filter(region_code: str | None = None, area: AlertArea | Non
             .scalar_subquery()
         )
         return func.ST_Contains(geometry, Detection.location)
+    if area is not None and area.polygon is not None:
+        polygon = select(AlertArea.polygon).where(AlertArea.id == area.id).scalar_subquery()
+        return func.ST_Contains(polygon, Detection.location)
     if area is not None:
         center = select(AlertArea.center).where(AlertArea.id == area.id).scalar_subquery()
         return func.ST_DWithin(center, func.geography(Detection.location), area.radius_km * 1000)
@@ -447,6 +463,37 @@ def detection_counts_by_hour(
     hour = func.extract("hour", Detection.image_time - timedelta(hours=3))
     query = select(hour, func.count(Detection.id)).group_by(hour)
     return {int(h): count for h, count in session.execute(_place_filter(_time_filters(query, since, until), place))}
+
+
+#: Recurrence grid cell, in degrees: ~2 km, about a GOES-19 pixel over Argentina.
+RECURRENCE_CELL_DEG = 0.02
+
+
+def recurrence_cells(
+    session: Session, since: datetime | None, until: datetime | None, place=None
+) -> list[tuple[float, float, int, int, int, datetime]]:
+    """Where fires come back: detections grouped into RECURRENCE_CELL_DEG cells, each
+    as (center lat, center lon, distinct days with fire, distinct years, detection
+    count, last image_time), most days first. Days and years are Argentina time
+    (UTC-3), so a fire burning for hours counts once a day."""
+    local_time = Detection.image_time - timedelta(hours=3)
+    cell = RECURRENCE_CELL_DEG
+    lat = (func.floor(func.ST_Y(Detection.location) / cell) + 0.5) * cell
+    lon = (func.floor(func.ST_X(Detection.location) / cell) + 0.5) * cell
+    days = func.count(func.distinct(func.date(local_time)))
+    query = (
+        select(
+            lat.label("lat"),
+            lon.label("lon"),
+            days,
+            func.count(func.distinct(func.extract("year", local_time))),
+            func.count(Detection.id),
+            func.max(Detection.image_time),
+        )
+        .group_by("lat", "lon")
+        .order_by(days.desc())
+    )
+    return [tuple(row) for row in session.execute(_place_filter(_time_filters(query, since, until), place))]
 
 
 def report_counts(

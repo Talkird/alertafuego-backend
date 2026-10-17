@@ -8,11 +8,17 @@ from datetime import datetime
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from backend.app.crud import detection_counts_by_hour, detection_counts_by_region, report_counts
+from backend.app.crud import (
+    RECURRENCE_CELL_DEG,
+    detection_counts_by_hour,
+    detection_counts_by_region,
+    recurrence_cells,
+    report_counts,
+)
 from backend.app.db import get_db
 from backend.app.models import RegionKind as RegionKindModel
 from backend.app.routers.regions import detection_place
-from backend.app.schemas import HourStat, RegionKind, RegionStat, ReportStat
+from backend.app.schemas import HourStat, Recurrence, RecurrenceCell, RegionKind, RegionStat, ReportStat
 
 router = APIRouter(prefix="/stats")
 
@@ -58,3 +64,21 @@ def get_report_stats(
         ReportStat(verdict=verdict, category=category, report_count=count)
         for verdict, category, count in report_counts(db, since, until, place)
     ]
+
+
+@router.get("/recurrence", response_model=Recurrence)
+def get_recurrence(
+    since: datetime | None = Query(None),
+    until: datetime | None = Query(None),
+    place=Depends(detection_place),
+    db: Session = Depends(get_db),
+) -> Recurrence:
+    """Where fires come back: ~2 km cells with detections, each with how many distinct
+    days (and years) it burned. Without since/until, over all stored detections."""
+    return Recurrence(
+        cell_size_deg=RECURRENCE_CELL_DEG,
+        cells=[
+            RecurrenceCell(lat=lat, lon=lon, fire_days=days, years=years, detection_count=count, last_image_time=last)
+            for lat, lon, days, years, count, last in recurrence_cells(db, since, until, place)
+        ],
+    )

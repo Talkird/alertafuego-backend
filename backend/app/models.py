@@ -88,17 +88,16 @@ class DetectionReport(Base):
 
 
 class AlertArea(Base):
-    """A user's alert zone: a circle (center + radius) or a province or department
-    (region_code). Every new detection inside it with probability >= min_probability
-    raises an alert, emailed to `email`."""
+    """A user's alert zone: a circle (center + radius), a polygon, or a province or
+    department (region_code), exactly one of them. Every new detection inside it with
+    probability >= min_probability raises an alert, emailed to `email`."""
 
     __tablename__ = "alert_areas"
     __table_args__ = (
         CheckConstraint("radius_km > 0 AND radius_km <= 200", name="ck_alert_area_radius"),
         CheckConstraint("min_probability >= 0 AND min_probability <= 1", name="ck_alert_area_min_probability"),
         CheckConstraint(
-            "(region_code IS NULL AND center IS NOT NULL AND radius_km IS NOT NULL)"
-            " OR (region_code IS NOT NULL AND center IS NULL AND radius_km IS NULL)",
+            "num_nonnulls(center, polygon, region_code) = 1 AND (center IS NULL) = (radius_km IS NULL)",
             name="ck_alert_area_shape",
         ),
     )
@@ -115,6 +114,9 @@ class AlertArea(Base):
     #: A region's IGN code (2 digits: province, 5: department). Not a foreign key:
     #: load_regions replaces the rows (new ids), but the codes stay the same.
     region_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: A polygon the user drew. Few per user and checked only against new detections,
+    #: so no spatial index.
+    polygon = mapped_column(Geometry("POLYGON", srid=4326, spatial_index=False), nullable=True)
     min_probability: Mapped[float] = mapped_column(Float, nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
