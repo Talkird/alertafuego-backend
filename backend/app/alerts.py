@@ -7,12 +7,12 @@ import math
 from datetime import timedelta
 
 from geoalchemy2.shape import to_shape
-from sqlalchemy import exists, func, insert, select
+from sqlalchemy import exists, func, insert, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from backend.app.crud import unlink_telegram_chat, user_settings_by_user
 from backend.app.mailer import AlertedDetection, send_alert_email
-from backend.app.models import AlertArea, AlertNotification, Detection
+from backend.app.models import AlertArea, AlertNotification, Detection, Region
 from backend.app.telegram import send_alert
 from backend.app.tokens import utcnow
 
@@ -49,9 +49,16 @@ def _matches(session: Session, detection_ids: list[int]) -> list[tuple[AlertArea
     )
     query = (
         select(AlertArea, Detection)
+        .outerjoin(Region, Region.code == AlertArea.region_code)
         .join(
             Detection,
-            func.ST_DWithin(AlertArea.center, func.geography(Detection.location), AlertArea.radius_km * 1000),
+            # An area has exactly one shape (the others are null), so only one of
+            # these can be true.
+            or_(
+                func.ST_DWithin(AlertArea.center, func.geography(Detection.location), AlertArea.radius_km * 1000),
+                func.ST_Contains(AlertArea.polygon, Detection.location),
+                func.ST_Contains(Region.geometry, Detection.location),
+            ),
         )
         .where(
             Detection.id.in_(detection_ids),

@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from enum import Enum
+from typing import Annotated
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
@@ -106,22 +107,61 @@ class StoredDetection(BaseModel):
     has_image: bool
 
 
+#: An IGN region code: 2 digits for a province, 5 for a department.
+REGION_CODE_PATTERN = r"^\d{2}(\d{3})?$"
+
+
+#: A polygon's corners as [lat, lon] pairs, not closed (the first isn't repeated).
+LatLon = tuple[Annotated[float, Field(ge=-90, le=90)], Annotated[float, Field(ge=-180, le=180)]]
+PolygonPoints = Annotated[list[LatLon], Field(min_length=3, max_length=200)]
+
+
+def _shapes_given(model: BaseModel) -> list[str]:
+    """Which of the three area shapes a payload sets any field of."""
+    shapes = []
+    if model.lat is not None or model.lon is not None or model.radius_km is not None:
+        shapes.append("circle")
+    if model.polygon is not None:
+        shapes.append("polygon")
+    if model.region_code is not None:
+        shapes.append("region")
+    return shapes
+
+
 class AlertAreaCreate(BaseModel):
+    """A circle (lat, lon and radius_km), a polygon, or a province or department
+    (region_code)."""
+
     name: str = Field(min_length=1, max_length=100)
-    lat: float = Field(ge=-90, le=90)
-    lon: float = Field(ge=-180, le=180)
-    radius_km: float = Field(gt=0, le=200)
+    lat: float | None = Field(None, ge=-90, le=90)
+    lon: float | None = Field(None, ge=-180, le=180)
+    radius_km: float | None = Field(None, gt=0, le=200)
+    polygon: PolygonPoints | None = None
+    region_code: str | None = Field(None, pattern=REGION_CODE_PATTERN)
     #: Above the model's 0.5 detection threshold by default, to cut false alarms.
     min_probability: float = Field(0.65, ge=0, le=1)
 
+    @model_validator(mode="after")
+    def _one_shape(self) -> "AlertAreaCreate":
+        shapes = _shapes_given(self)
+        if len(shapes) != 1:
+            raise ValueError("give exactly one of: lat, lon and radius_km; polygon; region_code")
+        if shapes == ["circle"] and None in (self.lat, self.lon, self.radius_km):
+            raise ValueError("lat, lon and radius_km are required for a circle area")
+        return self
+
 
 class AlertAreaUpdate(BaseModel):
-    """Partial update - fields left unset are unchanged. lat and lon go together."""
+    """Partial update - fields left unset are unchanged. lat and lon go together.
+    Setting another shape (a polygon, a region_code, or lat, lon and radius_km)
+    switches the area to it."""
 
     name: str | None = Field(None, min_length=1, max_length=100)
     lat: float | None = Field(None, ge=-90, le=90)
     lon: float | None = Field(None, ge=-180, le=180)
     radius_km: float | None = Field(None, gt=0, le=200)
+    polygon: PolygonPoints | None = None
+    region_code: str | None = Field(None, pattern=REGION_CODE_PATTERN)
     min_probability: float | None = Field(None, ge=0, le=1)
     active: bool | None = None
 
@@ -129,16 +169,32 @@ class AlertAreaUpdate(BaseModel):
     def _lat_lon_together(self) -> "AlertAreaUpdate":
         if (self.lat is None) != (self.lon is None):
             raise ValueError("lat and lon must be updated together")
+        if len(_shapes_given(self)) > 1:
+            raise ValueError("give at most one of: lat, lon and radius_km; polygon; region_code")
         return self
+
+
+class RegionResponse(BaseModel):
+    """A province or department."""
+
+    code: str
+    name: str
+    #: The department's province code. Null for provinces.
+    province_code: str | None
 
 
 class AlertAreaResponse(BaseModel):
     id: int
     name: str
     email: str
-    lat: float
-    lon: float
-    radius_km: float
+    #: lat, lon and radius_km: set for a circle area, null otherwise.
+    lat: float | None
+    lon: float | None
+    radius_km: float | None
+    #: Set for a polygon area: its corners as [lat, lon], not closed.
+    polygon: list[tuple[float, float]] | None
+    #: Set for a region area.
+    region: RegionResponse | None
     min_probability: float
     active: bool
     created_at: datetime
@@ -211,6 +267,24 @@ class HourStat(BaseModel):
     #: Hour of the day, Argentina time (UTC-3).
     hour: int
     detection_count: int
+
+
+class RecurrenceCell(BaseModel):
+    #: The cell's center.
+    lat: float
+    lon: float
+    #: Distinct days (Argentina time) with at least one detection in the cell.
+    fire_days: int
+    #: Distinct years with at least one detection.
+    years: int
+    detection_count: int
+    last_image_time: datetime
+
+
+class Recurrence(BaseModel):
+    #: Side of each cell, in degrees.
+    cell_size_deg: float
+    cells: list[RecurrenceCell]
 
 
 class ReportStat(BaseModel):

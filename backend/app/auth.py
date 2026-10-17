@@ -12,6 +12,8 @@ from fastapi import Depends, HTTPException
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 
 _bearer = HTTPBearer()
+#: For public endpoints that do more for a signed-in user.
+_optional_bearer = HTTPBearer(auto_error=False)
 _jwks_client: jwt.PyJWKClient | None = None
 
 
@@ -43,6 +45,13 @@ def _decode(credentials: HTTPAuthorizationCredentials) -> dict:
 
 def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(_bearer)) -> uuid.UUID:
     return uuid.UUID(_decode(credentials)["sub"])
+
+
+def get_optional_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_optional_bearer),
+) -> uuid.UUID | None:
+    """The user, or None without a token. A token that is sent but invalid is a 401."""
+    return None if credentials is None else uuid.UUID(_decode(credentials)["sub"])
 
 
 @dataclass(frozen=True)
