@@ -78,7 +78,15 @@ def get_recurrence(
     return Recurrence(
         cell_size_deg=RECURRENCE_CELL_DEG,
         cells=[
-            RecurrenceCell(lat=lat, lon=lon, fire_days=days, years=years, detection_count=count, last_image_time=last)
+            # Rounded: the grid arithmetic leaves float noise (-60.370000000000005).
+            RecurrenceCell(
+                lat=round(lat, 6),
+                lon=round(lon, 6),
+                fire_days=days,
+                years=years,
+                detection_count=count,
+                last_image_time=last,
+            )
             for lat, lon, days, years, count, last in recurrence_cells(db, since, until, place)
         ],
     )
