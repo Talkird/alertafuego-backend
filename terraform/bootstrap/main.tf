@@ -153,6 +153,13 @@ data "aws_iam_policy_document" "github_actions_deploy" {
     actions   = ["ecr:GetAuthorizationToken"]
     resources = ["*"]
   }
+  # Signing in to public ECR before pulling the Lambda Web Adapter image: anonymous
+  # pulls from shared GitHub runner IPs hit "toomanyrequests: Data limit exceeded".
+  statement {
+    effect    = "Allow"
+    actions   = ["ecr-public:GetAuthorizationToken", "sts:GetServiceBearerToken"]
+    resources = ["*"]
+  }
   statement {
     effect    = "Allow"
     actions   = ["ecr:*"]
