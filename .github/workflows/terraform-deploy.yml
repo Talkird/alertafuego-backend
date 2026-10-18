@@ -94,6 +94,13 @@ jobs:
       # exceeded", so pre-pull with retries; the build then reuses the local image.
       - name: Pre-pull Lambda Web Adapter image
         run: |
+          # Signed-in pulls get a far larger data allowance than anonymous ones,
+          # which shared runner IPs exhaust. Needs ecr-public:GetAuthorizationToken
+          # and sts:GetServiceBearerToken (terraform/bootstrap); until those are
+          # applied, it falls back to pulling anonymously.
+          aws ecr-public get-login-password --region us-east-1 \
+            | docker login --username AWS --password-stdin public.ecr.aws \
+            || echo "Public ECR login failed, pulling anonymously"
           image=$(grep -oE 'public\.ecr\.aws/[^ ]+' Dockerfile | head -1)
           for attempt in 1 2 3 4 5; do
             docker pull "$image" && exit 0
