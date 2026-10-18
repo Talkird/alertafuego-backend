@@ -1,6 +1,7 @@
 """Configuration for the wildfire segmentation model and its training loop."""
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 
@@ -15,6 +16,10 @@ class TrainingConfig:
     depth: int
     dice_weight: float
     seg_threshold: float
+    #: Patches are centered on the fire; shifting them up to this many pixels (train:
+    #: random, val/test: fixed per sample) keeps the model from learning "the fire is
+    #: in the middle", which never holds on the inference tiles. 0 disables it.
+    max_shift: int
     num_workers: int
     seed: int
     checkpoint_dir: Path
@@ -32,7 +37,41 @@ def default_config(checkpoint_dir: Path | None = None) -> TrainingConfig:
         depth=3,
         dice_weight=0.5,
         seg_threshold=0.5,
+        max_shift=8,
         num_workers=0,
         seed=0,
         checkpoint_dir=checkpoint_dir if checkpoint_dir is not None else Path("model/checkpoints"),
     )
+
+
+#: Candidates for the segmentation threshold, chosen on val. Fire pixels are rare,
+#: so the model's fire probabilities run low: the best threshold can sit well
+#: under 0.1, hence the fine steps at the bottom.
+THRESHOLD_CANDIDATES = [0.02, 0.04, 0.06, 0.08] + [round(0.05 * i, 2) for i in range(2, 19)]  # ... 0.90
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+    """What inference needs to rebuild and use a checkpoint: its size and the
+    threshold chosen on val. Saved next to model_best.pt as model_config.json."""
+
+    base_channels: int
+    depth: int
+    threshold: float
+
+
+MODEL_CONFIG_FILENAME = "model_config.json"
+
+
+def save_model_config(model_cfg: ModelConfig, checkpoint_dir: Path) -> None:
+    (checkpoint_dir / MODEL_CONFIG_FILENAME).write_text(json.dumps(asdict(model_cfg), indent=2) + "\n")
+
+
+def load_model_config(checkpoint_dir: Path) -> ModelConfig:
+    """The checkpoint's model_config.json, or the defaults for checkpoints trained
+    before it existed (which used them)."""
+    path = checkpoint_dir / MODEL_CONFIG_FILENAME
+    if path.exists():
+        return ModelConfig(**json.loads(path.read_text()))
+    cfg = default_config()
+    return ModelConfig(base_channels=cfg.base_channels, depth=cfg.depth, threshold=cfg.seg_threshold)

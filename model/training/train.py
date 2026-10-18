@@ -13,52 +13,88 @@ from torch import nn, optim
 from torch.utils.data import DataLoader
 
 from model.training.config import TrainingConfig
-from model.training.metrics import confusion_counts, f1, iou, precision, recall
+from model.training.metrics import confusion_counts, f1, iou, precision, recall, tolerant_counts
 
 logger = logging.getLogger(__name__)
 
-METRICS_FIELDNAMES = ["epoch", "train_loss", "val_loss", "val_precision", "val_recall", "val_f1", "val_iou"]
+METRICS_FIELDNAMES = [
+    "epoch",
+    "lr",
+    "train_loss",
+    "val_loss",
+    "val_precision",
+    "val_recall",
+    "val_f1",
+    "val_iou",
+    "val_f1_tol",
+]
 
 
 def train_one_epoch(
-    model: nn.Module, loader: DataLoader, optimizer: optim.Optimizer, loss_fn: nn.Module, device: torch.device
+    model: nn.Module,
+    loader: DataLoader,
+    optimizer: optim.Optimizer,
+    loss_fn: nn.Module,
+    device: torch.device,
+    scaler: torch.amp.GradScaler,
 ) -> float:
+    """One pass over loader. On a GPU, in mixed precision (float16 where safe):
+    about twice as fast, with the scaler keeping small gradients from rounding to 0."""
     model.train()
     total_loss = 0.0
     for patches, masks in loader:
         patches, masks = patches.to(device), masks.to(device).unsqueeze(1)
         optimizer.zero_grad()
-        logits = model(patches)
-        loss = loss_fn(logits, masks)
-        loss.backward()
-        optimizer.step()
+        with torch.autocast(device.type, enabled=device.type == "cuda"):
+            logits = model(patches)
+            loss = loss_fn(logits.float(), masks)
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
         total_loss += loss.item()
     return total_loss / len(loader)
 
 
-def evaluate(model: nn.Module, loader: DataLoader, loss_fn: nn.Module, device: torch.device, threshold: float) -> dict:
+def evaluate_thresholds(
+    model: nn.Module, loader: DataLoader, loss_fn: nn.Module, device: torch.device, thresholds: list[float]
+) -> list[dict]:
+    """Scores at every threshold in one pass over loader: loss, and strict and
+    tolerant (1 pixel, see metrics.tolerant_counts) precision/recall/F1."""
     model.eval()
     total_loss = 0.0
-    tp_total = fp_total = fn_total = 0.0
+    counts = torch.zeros(len(thresholds), 7, dtype=torch.float64)  # tp fp fn | tol: 4
     with torch.no_grad():
         for patches, masks in loader:
             patches, masks = patches.to(device), masks.to(device).unsqueeze(1)
-            logits = model(patches)
+            logits = model(patches).float()
             total_loss += loss_fn(logits, masks).item()
-            tp, fp, fn, _ = confusion_counts(logits, masks, threshold)
-            tp_total += tp.item()
-            fp_total += fp.item()
-            fn_total += fn.item()
+            for i, threshold in enumerate(thresholds):
+                tp, fp, fn, _ = confusion_counts(logits, masks, threshold)
+                counts[i] += torch.stack([tp, fp, fn, *tolerant_counts(logits, masks, threshold)]).double().cpu()
 
-    precision_value = precision(tp_total, fp_total)
-    recall_value = recall(tp_total, fn_total)
-    return {
-        "loss": total_loss / len(loader),
-        "precision": precision_value,
-        "recall": recall_value,
-        "f1": f1(precision_value, recall_value),
-        "iou": iou(tp_total, fp_total, fn_total),
-    }
+    results = []
+    for threshold, (tp, fp, fn, pred_near, pred_total, true_near, true_total) in zip(thresholds, counts.tolist()):
+        precision_value, recall_value = precision(tp, fp), recall(tp, fn)
+        precision_tol = pred_near / pred_total if pred_total else 0.0
+        recall_tol = true_near / true_total if true_total else 0.0
+        results.append(
+            {
+                "threshold": threshold,
+                "loss": total_loss / len(loader),
+                "precision": precision_value,
+                "recall": recall_value,
+                "f1": f1(precision_value, recall_value),
+                "iou": iou(tp, fp, fn),
+                "precision_tol": precision_tol,
+                "recall_tol": recall_tol,
+                "f1_tol": f1(precision_tol, recall_tol),
+            }
+        )
+    return results
+
+
+def evaluate(model: nn.Module, loader: DataLoader, loss_fn: nn.Module, device: torch.device, threshold: float) -> dict:
+    return evaluate_thresholds(model, loader, loss_fn, device, [threshold])[0]
 
 
 def fit(
@@ -70,36 +106,45 @@ def fit(
     loss_fn: nn.Module,
     device: torch.device,
 ) -> Path:
-    """Runs cfg.epochs epochs, appending one metrics.csv row per epoch (crash-safe)
-    and checkpointing model_best.pt whenever validation F1 improves. Returns the
-    checkpoint path."""
+    """Runs cfg.epochs epochs with a cosine learning-rate schedule, appending one
+    metrics.csv row per epoch (crash-safe) and checkpointing model_best.pt whenever
+    validation F1 improves. Returns the checkpoint path."""
     cfg.checkpoint_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = cfg.checkpoint_dir / "metrics.csv"
     best_model_path = cfg.checkpoint_dir / "model_best.pt"
     best_f1 = -1.0
+    # Decays the learning rate smoothly to ~0 by the last epoch: big steps early,
+    # fine adjustments at the end.
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.epochs)
+    scaler = torch.amp.GradScaler(device.type, enabled=device.type == "cuda")
 
     with metrics_path.open("w", newline="", encoding="utf-8") as f:
         csv.DictWriter(f, fieldnames=METRICS_FIELDNAMES).writeheader()
 
     for epoch in range(1, cfg.epochs + 1):
-        train_loss = train_one_epoch(model, train_loader, optimizer, loss_fn, device)
+        lr = optimizer.param_groups[0]["lr"]
+        train_loss = train_one_epoch(model, train_loader, optimizer, loss_fn, device, scaler)
+        scheduler.step()
         val_metrics = evaluate(model, val_loader, loss_fn, device, cfg.seg_threshold)
 
         row = {
             "epoch": epoch,
+            "lr": lr,
             "train_loss": train_loss,
             "val_loss": val_metrics["loss"],
             "val_precision": val_metrics["precision"],
             "val_recall": val_metrics["recall"],
             "val_f1": val_metrics["f1"],
             "val_iou": val_metrics["iou"],
+            "val_f1_tol": val_metrics["f1_tol"],
         }
         with metrics_path.open("a", newline="", encoding="utf-8") as f:
             csv.DictWriter(f, fieldnames=METRICS_FIELDNAMES).writerow(row)
 
         logger.info(
-            "Epoch %d/%d: train_loss=%.4f val_loss=%.4f val_f1=%.4f val_iou=%.4f",
+            "Epoch %d/%d: train_loss=%.4f val_loss=%.4f val_f1=%.4f val_iou=%.4f val_f1_tol=%.4f",
             epoch, cfg.epochs, train_loss, val_metrics["loss"], val_metrics["f1"], val_metrics["iou"],
+            val_metrics["f1_tol"],
         )
 
         if val_metrics["f1"] > best_f1:
@@ -123,6 +168,7 @@ def plot_training_curves(metrics_csv_path: Path, output_png_path: Path) -> None:
 
     ax_metrics.plot(epochs, [float(row["val_f1"]) for row in rows], label="val_f1")
     ax_metrics.plot(epochs, [float(row["val_iou"]) for row in rows], label="val_iou")
+    ax_metrics.plot(epochs, [float(row["val_f1_tol"]) for row in rows], label="val_f1_tol")
     ax_metrics.set_xlabel("epoch")
     ax_metrics.legend()
 

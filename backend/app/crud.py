@@ -1,6 +1,7 @@
 """Database read/write operations."""
 
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from geoalchemy2.elements import WKTElement
@@ -18,10 +19,13 @@ from backend.app.models import (
     ReportVerdict,
     UserSettings,
 )
-from model.inference.service import DetectionResult
+
+if TYPE_CHECKING:
+    # Type only: importing the inference service would load torch with the API.
+    from model.inference.service import DetectionResult
 
 
-def save_detections(session: Session, result: DetectionResult) -> list[int]:
+def save_detections(session: Session, result: "DetectionResult") -> list[int]:
     """Bulk-insert result.detections as rows. Returns the new rows' ids."""
     if not result.detections:
         return []
