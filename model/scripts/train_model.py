@@ -20,15 +20,12 @@ import torch
 from torch import optim
 from torch.utils.data import DataLoader
 
-from model.training.config import ModelConfig, default_config, save_model_config
+from model.training.config import THRESHOLD_CANDIDATES, ModelConfig, default_config, save_model_config
 from model.training.dataset import FirePatchDataset, list_split_files
 from model.training.losses import BCEDiceLoss
 from model.training.model import TinyUNet
 from model.training.normalization import compute_band_stats, save_band_stats
 from model.training.train import evaluate, evaluate_thresholds, fit, plot_training_curves
-
-#: Candidates for the segmentation threshold, chosen on val after training.
-THRESHOLDS = [round(0.05 * i, 2) for i in range(2, 19)]  # 0.10 ... 0.90
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +123,7 @@ def main() -> None:
 
     # The threshold is picked on val; test is scored once, at it - choosing it on
     # test would overstate the result.
-    val_sweep = evaluate_thresholds(model, val_loader, loss_fn, device, THRESHOLDS)
+    val_sweep = evaluate_thresholds(model, val_loader, loss_fn, device, THRESHOLD_CANDIDATES)
     best = max(val_sweep, key=lambda m: m["f1"])
     threshold = best["threshold"]
     logger.info("Best val threshold %.2f: f1=%.4f f1_tol=%.4f", threshold, best["f1"], best["f1_tol"])

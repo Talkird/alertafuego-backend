@@ -19,7 +19,7 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
-from model.training.config import default_config, load_model_config
+from model.training.config import THRESHOLD_CANDIDATES, default_config, load_model_config
 from model.training.dataset import FirePatchDataset
 from model.training.losses import BCEDiceLoss
 from model.training.model import TinyUNet
@@ -35,7 +35,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-dir", type=Path, default=Path("model/checkpoints"))
     parser.add_argument("--split", choices=["train", "val", "test"], default="val")
     parser.add_argument(
-        "--thresholds", type=float, nargs="+", default=[0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6]
+        "--thresholds", type=float, nargs="+", default=THRESHOLD_CANDIDATES
     )
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--num-workers", type=int, default=0)
