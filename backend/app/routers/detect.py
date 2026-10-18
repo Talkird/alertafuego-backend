@@ -1,9 +1,13 @@
-"""Detection endpoints: on-demand fetch-latest-image + run-model."""
+"""Detection endpoints: on-demand fetch-latest-image + run-model.
+
+torch, Earth Engine and the inference code are imported only when a detection
+runs, so importing this router (at every cold start) stays cheap."""
 
 import os
+import threading
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-import ee
 from dotenv import load_dotenv
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
@@ -14,11 +18,31 @@ from backend.app.crud import save_detections
 from backend.app.db import get_db
 from backend.app.schemas import BBoxSchema, Detection, DetectionResponse
 from model.data_pipeline.config import BBox
-from model.inference.raster_fetch import NoImageAvailableError
-from model.inference.service import DetectionResult, InferenceContext, run_detection
 from model.training.config import load_model_config
 
+if TYPE_CHECKING:
+    from model.inference.service import DetectionResult, InferenceContext
+
+# Router-level dependencies run before the endpoint's own, so a request without
+# the key is rejected before it can trigger loading the model.
 router = APIRouter(prefix="/detect", dependencies=[Depends(require_detect_key)])
+
+_load_lock = threading.Lock()
+
+
+def get_inference_ctx(request: Request) -> "InferenceContext":
+    """The inference context (Earth Engine auth, model, normalization stats), loaded
+    by the first detection run on this instance and kept for the next ones. The
+    lock keeps two simultaneous first runs from loading it twice."""
+    ctx = getattr(request.app.state, "inference_ctx", None)
+    if ctx is None:
+        with _load_lock:
+            ctx = getattr(request.app.state, "inference_ctx", None)
+            if ctx is None:
+                from model.inference.service import load_context
+
+                ctx = request.app.state.inference_ctx = load_context()
+    return ctx
 
 
 def _debug_image_dir() -> Path | None:
@@ -29,7 +53,7 @@ def _debug_image_dir() -> Path | None:
     return Path(raw) if raw else None
 
 
-def _to_response(result: DetectionResult) -> DetectionResponse:
+def _to_response(result: "DetectionResult") -> DetectionResponse:
     return DetectionResponse(
         image_time=result.image_time,
         bbox=BBoxSchema(
@@ -42,7 +66,12 @@ def _to_response(result: DetectionResult) -> DetectionResponse:
     )
 
 
-def _run(ctx: InferenceContext, bbox: BBox, db: Session) -> DetectionResponse:
+def _run(ctx: "InferenceContext", bbox: BBox, db: Session) -> DetectionResponse:
+    import ee
+
+    from model.inference.raster_fetch import NoImageAvailableError
+    from model.inference.service import run_detection
+
     # The threshold chosen on val when the model was trained.
     threshold = load_model_config(ctx.cfg.checkpoint_dir).threshold
     try:
@@ -55,12 +84,14 @@ def _run(ctx: InferenceContext, bbox: BBox, db: Session) -> DetectionResponse:
 
 
 @router.post("/demo", response_model=DetectionResponse)
-def detect_demo(request: Request, db: Session = Depends(get_db)) -> DetectionResponse:
-    ctx: InferenceContext = request.app.state.inference_ctx
+def detect_demo(
+    ctx: "InferenceContext" = Depends(get_inference_ctx), db: Session = Depends(get_db)
+) -> DetectionResponse:
     return _run(ctx, ctx.cfg.demo_bbox, db)
 
 
 @router.post("/argentina", response_model=DetectionResponse)
-def detect_argentina(request: Request, db: Session = Depends(get_db)) -> DetectionResponse:
-    ctx: InferenceContext = request.app.state.inference_ctx
+def detect_argentina(
+    ctx: "InferenceContext" = Depends(get_inference_ctx), db: Session = Depends(get_db)
+) -> DetectionResponse:
     return _run(ctx, ctx.cfg.argentina_bbox, db)

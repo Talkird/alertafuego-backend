@@ -126,8 +126,10 @@ python -m uvicorn backend.app.main:app --reload
 (Correr desde la raíz del repo — no `uvicorn backend.app.main:app` a secas — para que
 los imports `model.*`/`backend.*` resuelvan.)
 
-Al arrancar carga el modelo entrenado y autentica Earth Engine una sola vez (no por
-request). Endpoints:
+La primera corrida de detección de cada instancia carga el modelo entrenado y autentica
+Earth Engine, una sola vez (no por request). No se hace al arrancar: los endpoints de
+lectura que usa el frontend no los necesitan, y así un cold start de la API no espera a
+torch ni a Earth Engine. Endpoints:
 
 - `POST /detect/demo` — corre el modelo sobre un bbox chico y fijo (La Rioja/Catamarca/
   San Juan), responde en segundos.

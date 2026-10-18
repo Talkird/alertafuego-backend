@@ -1,22 +1,15 @@
 import os
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.routers import account, alerts, detect, detections, reports, stats, telegram
-from model.inference.service import load_context
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    app.state.inference_ctx = load_context()
-    yield
-
-
-app = FastAPI(lifespan=lifespan)
+# The model and Earth Engine load on the first detection run (detect.get_inference_ctx),
+# not at startup: the endpoints the app calls don't need them, and loading them made
+# every cold start slow.
+app = FastAPI()
 
 load_dotenv()
 frontend_origins = os.getenv("FRONTEND_ORIGINS", "http://localhost:3000").split(",")
