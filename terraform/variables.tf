@@ -95,3 +95,21 @@ variable "telegram_webhook_secret" {
   sensitive   = true
   default     = ""
 }
+
+variable "detection_schedule" {
+  description = "How often the scheduled detection runs (EventBridge Scheduler expression). GOES-19 captures a full disk every 10 minutes."
+  type        = string
+  default     = "rate(10 minutes)"
+}
+
+variable "detection_schedule_enabled" {
+  description = "Whether the scheduled detection runs. Off until a manual run of the detector function confirms the model's output (see terraform/README.md)."
+  type        = bool
+  default     = false
+}
+
+variable "detector_timeout" {
+  description = "Detector Lambda timeout in seconds: under the schedule's interval, so a hung run ends before the next starts. A full-country run takes ~50 s."
+  type        = number
+  default     = 540
+}

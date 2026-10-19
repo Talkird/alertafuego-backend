@@ -165,6 +165,12 @@ data "aws_iam_policy_document" "github_actions_deploy" {
     actions   = ["ecr:*"]
     resources = ["arn:aws:ecr:*:${data.aws_caller_identity.current.account_id}:repository/${var.project_name}-*"]
   }
+  # The scheduled detection (terraform/detector.tf).
+  statement {
+    effect    = "Allow"
+    actions   = ["scheduler:*"]
+    resources = ["arn:aws:scheduler:*:${data.aws_caller_identity.current.account_id}:schedule/default/${var.project_name}-*"]
+  }
   statement {
     effect    = "Allow"
     actions   = ["lambda:*"]

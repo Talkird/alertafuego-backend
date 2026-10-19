@@ -40,6 +40,12 @@ def get_latest_goes_image() -> ee.Image:
     return ee.Image(recent.sort("system:time_start", False).first())
 
 
+def image_capture_time(goes_image: ee.Image) -> datetime:
+    """The image's capture time, as naive UTC (how detections store it)."""
+    millis = goes_image.get("system:time_start").getInfo()
+    return datetime.fromtimestamp(millis / 1000, tz=timezone.utc).replace(tzinfo=None)
+
+
 def compute_chunk_grid(bbox: BBox, chunk_size_px: int) -> list[BBox]:
     """Split bbox into a grid of sub-bboxes each ~chunk_size_px x chunk_size_px."""
     lon_deg_per_px, lat_deg_per_px = degrees_per_pixel(target_projection())

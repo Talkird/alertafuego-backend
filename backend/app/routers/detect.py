@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from backend.app.alerts import process_new_detections
@@ -30,19 +30,23 @@ router = APIRouter(prefix="/detect", dependencies=[Depends(require_detect_key)])
 _load_lock = threading.Lock()
 
 
-def get_inference_ctx(request: Request) -> "InferenceContext":
+def inference_ctx(app: FastAPI) -> "InferenceContext":
     """The inference context (Earth Engine auth, model, normalization stats), loaded
     by the first detection run on this instance and kept for the next ones. The
     lock keeps two simultaneous first runs from loading it twice."""
-    ctx = getattr(request.app.state, "inference_ctx", None)
+    ctx = getattr(app.state, "inference_ctx", None)
     if ctx is None:
         with _load_lock:
-            ctx = getattr(request.app.state, "inference_ctx", None)
+            ctx = getattr(app.state, "inference_ctx", None)
             if ctx is None:
                 from model.inference.service import load_context
 
-                ctx = request.app.state.inference_ctx = load_context()
+                ctx = app.state.inference_ctx = load_context()
     return ctx
+
+
+def get_inference_ctx(request: Request) -> "InferenceContext":
+    return inference_ctx(request.app)
 
 
 def _debug_image_dir() -> Path | None:

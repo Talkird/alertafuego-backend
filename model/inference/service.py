@@ -2,9 +2,10 @@
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
+import ee
 import torch
 from shapely.geometry.base import BaseGeometry
 
@@ -13,7 +14,7 @@ from model.data_pipeline.ee_client import init_earth_engine
 from model.inference.config import InferenceConfig, default_config
 from model.inference.land_filter import filter_to_polygon, load_argentina_polygon
 from model.inference.predictor import load_model, predict_tiles
-from model.inference.raster_fetch import fetch_calibrated_chunks, get_latest_goes_image
+from model.inference.raster_fetch import fetch_calibrated_chunks, get_latest_goes_image, image_capture_time
 from model.inference.tiling import assemble_raster, pixel_to_latlon, tile_raster
 from model.inference.visualize import render_detection_thumbnail, save_debug_image, save_true_color_image
 from model.training.normalization import BandStats, load_band_stats
@@ -54,11 +55,16 @@ def load_context(cfg: InferenceConfig | None = None) -> InferenceContext:
 
 
 def run_detection(
-    ctx: InferenceContext, bbox: BBox, threshold: float, debug_image_dir: Path | None = None
+    ctx: InferenceContext,
+    bbox: BBox,
+    threshold: float,
+    debug_image_dir: Path | None = None,
+    goes_image: ee.Image | None = None,
 ) -> DetectionResult:
-    goes_image = get_latest_goes_image()
-    image_time_millis = goes_image.get("system:time_start").getInfo()
-    image_time = datetime.fromtimestamp(image_time_millis / 1000, tz=timezone.utc).replace(tzinfo=None)
+    """Detects fires in goes_image (default: the latest GOES-19 capture) over bbox."""
+    if goes_image is None:
+        goes_image = get_latest_goes_image()
+    image_time = image_capture_time(goes_image)
 
     chunks = fetch_calibrated_chunks(goes_image, bbox, ctx.cfg.chunk_size_px)
     raster = assemble_raster(chunks, bbox)

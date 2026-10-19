@@ -112,6 +112,23 @@ verified identities:
    ```
    Users then connect from **Mi cuenta → Conectar Telegram** in the frontend.
 
+### 7. Scheduled detection
+
+`detector.tf` creates a second function, `alertafuego-detector`, that runs the
+detection over Argentina, and an EventBridge Scheduler schedule (every 10 minutes) to
+invoke it. The schedule starts **disabled**.
+
+1. The deploy role needs permission to manage schedules: re-apply `bootstrap/` locally
+   once (`terraform plan`, then `terraform apply`; the plan should only update the
+   deploy role's policy, adding `scheduler:*`).
+2. After the next deploy, run one detection by hand and check its output (detection
+   count, threshold, how long it took):
+   ```
+   aws lambda invoke --function-name alertafuego-detector --payload '{}' --cli-binary-format raw-in-base64-out out.json && cat out.json
+   ```
+3. If it looks right, set `detection_schedule_enabled` to `true` in `variables.tf`
+   and merge. Each run is recorded in the `detection_runs` table.
+
 ## Everyday use
 
 Push to `main` with changes under `backend/`, `model/`, `Dockerfile`, or

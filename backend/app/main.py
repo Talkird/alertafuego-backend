@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend.app.routers import account, alerts, detect, detections, reports, stats, telegram
+from backend.app.routers import account, alerts, detect, detections, reports, scheduled, stats, telegram
 
 # The model and Earth Engine load on the first detection run (detect.get_inference_ctx),
 # not at startup: the endpoints the app calls don't need them, and loading them made
@@ -27,6 +27,11 @@ app.include_router(alerts.router)
 app.include_router(stats.router)
 app.include_router(account.router)
 app.include_router(telegram.router)
+
+# The detector Lambda (terraform/detector.tf) runs the scheduled detection; the public
+# API doesn't mount the route at all.
+if os.getenv("DETECTION_WORKER") == "1":
+    app.include_router(scheduled.router)
 
 
 @app.get("/")
