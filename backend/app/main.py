@@ -1,3 +1,4 @@
+import logging
 import os
 
 from dotenv import load_dotenv
@@ -5,6 +6,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.routers import account, alerts, detect, detections, reports, scheduled, stats, telegram
+
+# The app's own INFO messages (e.g. each scheduled run's result) reach the Lambda logs;
+# without this only uvicorn's request lines did.
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 # The model and Earth Engine load on the first detection run (detect.get_inference_ctx),
 # not at startup: the endpoints the app calls don't need them, and loading them made

@@ -6,6 +6,9 @@ FROM python:3.12-slim
 COPY --from=public.ecr.aws/awsguru/aws-lambda-adapter:0.8.4 /lambda-adapter /opt/extensions/lambda-adapter
 ENV PORT=8080
 ENV AWS_LWA_READINESS_CHECK_PATH=/
+# Lambda's filesystem is read-only except /tmp; matplotlib (detection thumbnails)
+# otherwise warns and builds a new cache directory on every cold start.
+ENV MPLCONFIGDIR=/tmp/matplotlib
 
 WORKDIR /app
 
