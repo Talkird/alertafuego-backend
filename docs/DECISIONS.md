@@ -283,3 +283,14 @@
 - Cost: ~144 runs a day of ~50 s at 3 GB, roughly within Lambda's free tier to a few dollars a month (estimate); also 144 runs a day of Earth Engine requests.
 - With the model's 0.08 threshold, the number of detections per run over the whole country needs checking before enabling the schedule.
 
+### [2026-10-19] — Scheduled detection every 20 minutes (kept disabled for now)
+
+**Context:** The first manual run of the detector (2026-10-19) processed the 01:30 UTC GOES-19 image: 27 detections over Argentina (threshold 0.08, confirming b-shift is deployed; 10 at probability >= 0.65), in 199.7 s (the detector's first run, including the new image's cold start and loading the model), peaking at 2.1 GB. The image was ~37 minutes old when the run started: Earth Engine's delay in publishing GOES-19, which the system can't shorten. A fire reached the map 41 minutes after the capture.
+**Decision:** Run the schedule every 20 minutes rather than every 10, and log each run's result (`logging.basicConfig` at INFO). The schedule stays disabled (`detection_schedule_enabled = false`): checking the run against NOAA's FDCF fire product and VIIRS showed misplaced detections (fixed: fetched chunks were south-up) and, in daytime scenes, false positives with no relation to VIIRS fires. It is enabled once the model's full-scene precision is acceptable.
+**Alternatives considered:**
+- Every 10 minutes, GOES-19's cadence. With Earth Engine's ~40-minute delay, alerts would arrive ~40-50 minutes after a capture instead of ~40-60, at twice the runs: at ~3.3 minutes a run, about USD 35 a month of Lambda versus about half that (estimates from Lambda's public pricing).
+**Rationale:** Earth Engine's delay dominates the latency, so halving the runs costs little in timeliness and halves the cost and Earth Engine usage.
+**Consequences:**
+- Measure real run durations in `detection_runs` for a day; if runs are short (~1 minute), go to every 10 minutes (`detection_schedule`).
+- Half the GOES-19 images are skipped; a fire visible in only one 10-minute image can be missed.
+

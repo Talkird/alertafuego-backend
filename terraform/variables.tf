@@ -97,13 +97,13 @@ variable "telegram_webhook_secret" {
 }
 
 variable "detection_schedule" {
-  description = "How often the scheduled detection runs (EventBridge Scheduler expression). GOES-19 captures a full disk every 10 minutes."
+  description = "How often the scheduled detection runs (EventBridge Scheduler expression). GOES-19 captures a full disk every 10 minutes, but Earth Engine publishes them ~40 minutes late, so 20 minutes barely delays alerts at half the runs."
   type        = string
-  default     = "rate(10 minutes)"
+  default     = "rate(20 minutes)"
 }
 
 variable "detection_schedule_enabled" {
-  description = "Whether the scheduled detection runs. Off until a manual run of the detector function confirms the model's output (see terraform/README.md)."
+  description = "Whether the scheduled detection runs."
   type        = bool
   default     = false
 }

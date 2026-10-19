@@ -47,9 +47,9 @@ def tile_raster(raster: np.ndarray, tile_size: int = 32) -> tuple[np.ndarray, li
 
 
 def pixel_to_latlon(row_px: int, col_px: int, raster_bbox: BBox, raster_shape: tuple[int, int]) -> tuple[float, float]:
-    """Linear interpolation from a pixel offset (in the cropped raster) back to a
-    geographic coordinate, given the raster's overall bbox and shape."""
+    """Linear interpolation from a pixel position in the (uncropped) raster to the
+    geographic coordinate of that pixel's center, given the raster's bbox and shape."""
     height, width = raster_shape
-    lat = raster_bbox.north - (row_px / height) * (raster_bbox.north - raster_bbox.south)
-    lon = raster_bbox.west + (col_px / width) * (raster_bbox.east - raster_bbox.west)
+    lat = raster_bbox.north - ((row_px + 0.5) / height) * (raster_bbox.north - raster_bbox.south)
+    lon = raster_bbox.west + ((col_px + 0.5) / width) * (raster_bbox.east - raster_bbox.west)
     return lat, lon

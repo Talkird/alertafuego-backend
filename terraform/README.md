@@ -115,19 +115,20 @@ verified identities:
 ### 7. Scheduled detection
 
 `detector.tf` creates a second function, `alertafuego-detector`, that runs the
-detection over Argentina, and an EventBridge Scheduler schedule (every 10 minutes) to
-invoke it. The schedule starts **disabled**.
+detection over Argentina, and an EventBridge Scheduler schedule (every 20 minutes,
+`detection_schedule`) to invoke it. `detection_schedule_enabled` turns it off.
 
 1. The deploy role needs permission to manage schedules: re-apply `bootstrap/` locally
    once (`terraform plan`, then `terraform apply`; the plan should only update the
    deploy role's policy, adding `scheduler:*`).
-2. After the next deploy, run one detection by hand and check its output (detection
-   count, threshold, how long it took):
+2. To run one detection by hand, invoke it in the background (a run can take a few
+   minutes, longer than the AWS CLI waits for a reply) and follow the logs:
    ```
-   aws lambda invoke --function-name alertafuego-detector --payload '{}' --cli-binary-format raw-in-base64-out out.json && cat out.json
+   aws lambda invoke --function-name alertafuego-detector --invocation-type Event --payload '{}' --cli-binary-format raw-in-base64-out /dev/null
+   aws logs tail /aws/lambda/alertafuego-detector --follow
    ```
-3. If it looks right, set `detection_schedule_enabled` to `true` in `variables.tf`
-   and merge. Each run is recorded in the `detection_runs` table.
+   The run logs its result ("Scheduled detection: image ..., N detections, M alerts").
+   Each run is also recorded in the `detection_runs` table.
 
 ## Everyday use
 

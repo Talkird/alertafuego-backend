@@ -72,16 +72,17 @@ def run_detection(
     probabilities = predict_tiles(ctx.model, ctx.band_stats, tiles, ctx.device)
 
     _, height, width = raster.shape
-    cropped_height = (height // ctx.cfg.patch_size_px) * ctx.cfg.patch_size_px
-    cropped_width = (width // ctx.cfg.patch_size_px) * ctx.cfg.patch_size_px
+    # tile_raster() center-crops the raster; offsets are relative to that crop.
+    crop_top = (height - (height // ctx.cfg.patch_size_px) * ctx.cfg.patch_size_px) // 2
+    crop_left = (width - (width // ctx.cfg.patch_size_px) * ctx.cfg.patch_size_px) // 2
 
     detections: list[tuple[float, float, float, int, int]] = []  # lat, lon, probability, row, col
     for (row_offset, col_offset), tile_probs in zip(offsets, probabilities):
         rows, cols = (tile_probs >= threshold).nonzero()
         for row, col in zip(rows, cols):
-            abs_row, abs_col = row_offset + int(row), col_offset + int(col)
+            abs_row, abs_col = crop_top + row_offset + int(row), crop_left + col_offset + int(col)
             probability = float(tile_probs[row, col])
-            lat, lon = pixel_to_latlon(abs_row, abs_col, bbox, (cropped_height, cropped_width))
+            lat, lon = pixel_to_latlon(abs_row, abs_col, bbox, (height, width))
             detections.append((lat, lon, probability, abs_row, abs_col))
 
     if debug_image_dir is not None:
