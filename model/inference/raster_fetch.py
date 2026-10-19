@@ -74,7 +74,11 @@ def fetch_chunk_raster(
     sampled = masked.sampleRectangle(region=region, defaultValue=RAW_FILL_VALUE)
     properties = sampled.getInfo()["properties"]
 
-    raster = calibrate_raw_bands(properties, scale_offsets)
+    # target_projection() has a positive y scale, so sampleRectangle returns rows
+    # south to north; flip to north-up, which assemble_raster() and pixel_to_latlon()
+    # assume. (Training patches stay south-up; random flips in training make the
+    # model indifferent to orientation.)
+    raster = calibrate_raw_bands(properties, scale_offsets)[:, ::-1, :]
     n_pixels = raster.shape[1] * raster.shape[2]
     if n_pixels > MAX_SAMPLE_PIXELS:
         logger.warning(
