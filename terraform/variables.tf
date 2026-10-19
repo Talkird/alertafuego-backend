@@ -105,7 +105,7 @@ variable "detection_schedule" {
 variable "detection_schedule_enabled" {
   description = "Whether the scheduled detection runs."
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "detector_timeout" {
