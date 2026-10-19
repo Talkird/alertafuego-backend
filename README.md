@@ -232,6 +232,17 @@ y commitearla en el frontend:
 python -m backend.scripts.export_regions ../alertafuego-frontend
 ```
 
+### Detección programada
+
+Una segunda Lambda (`alertafuego-detector`, misma imagen) corre la detección sobre toda
+Argentina cada 10 minutos, invocada por EventBridge Scheduler (`terraform/detector.tf`).
+La Lambda de la API nunca corre esas detecciones, así que no afectan a la app. Cada
+imagen GOES-19 se procesa una sola vez: la tabla `detection_runs` guarda una fila por
+imagen (`image_time` única) con el estado (`running`, `ok`, `error`), la cantidad de
+detecciones y alertas, y los horarios de inicio y fin. Si la última imagen ya se
+procesó, o hay otra corrida en curso, la corrida termina en segundos sin cargar el
+modelo. Activarla y correrla a mano: `terraform/README.md`, paso 7.
+
 Docs interactivas en `/docs`. Ver esquema de la tabla `detections` y por qué se
 modeló así en `docs/DECISIONS.md` (entradas de persistencia, fase 4).
 

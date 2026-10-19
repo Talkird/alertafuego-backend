@@ -13,6 +13,7 @@ from sqlalchemy import (
     Enum,
     Float,
     ForeignKey,
+    Integer,
     LargeBinary,
     Text,
     UniqueConstraint,
@@ -138,6 +139,27 @@ class AlertNotification(Base):
     emailed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     #: Null when no Telegram message was sent (not connected, or it failed).
     telegram_sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class DetectionRun(Base):
+    """One scheduled detection run, keyed by the GOES-19 image it processed. The
+    unique image_time keeps an image from being processed twice (the schedule fires
+    more often than new images may reach Earth Engine), and the rows record how the
+    automatic detection performs: how late after the capture it ran, how long it
+    took, how many detections and alerts it produced, and failures."""
+
+    __tablename__ = "detection_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    #: The GOES-19 capture time (UTC, naive like Detection.image_time).
+    image_time: Mapped[datetime] = mapped_column(DateTime, nullable=False, unique=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: "running", "ok" or "error".
+    status: Mapped[str] = mapped_column(Text, nullable=False, server_default="running")
+    detection_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    alert_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class UserSettings(Base):

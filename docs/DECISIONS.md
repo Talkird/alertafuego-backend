@@ -265,3 +265,21 @@
 - Running a detection by hand needs the header (`curl -H "X-API-Key: ..."`, or **Authorize** in `/docs`). The future scheduler must hold the key.
 - New GitHub secret `DETECT_API_KEY`, passed to Lambda through Terraform. It is required, so the deploy fails until it's set.
 - Local `.env` needs `DETECT_API_KEY` to run detections.
+
+### [2026-10-19] — Run detection on a schedule, in a separate Lambda, once per GOES-19 image
+
+**Context:** Nothing ran `/detect/argentina` automatically: detections and alerts only happened when someone called it by hand (the last run was on 2026-09-29), which falls short of the system's near-real-time goal. A run takes ~50 s and loads the model; the API Lambda serves the app.
+**Decision:**
+- A second Lambda, `alertafuego-detector`, from the same image, invoked every 10 minutes (GOES-19's full-disk cadence) by EventBridge Scheduler. The Lambda Web Adapter forwards the scheduler's event as a POST to `/internal/scheduled-detection`, a route mounted only when `DETECTION_WORKER=1`, so it doesn't exist on the public API.
+- A `detection_runs` table, one row per processed image (`image_time` unique), with status, counts and timings. A run first checks, without loading the model, whether another run is in progress or the latest image was already processed, and stops if so.
+- The schedule ships disabled, enabled after a manual run confirms the deployed model's output.
+**Alternatives considered:**
+- An EventBridge rule calling the public `/detect/argentina` with the API key. Runs would occupy the instances serving the app.
+- Reserved concurrency of 1 to prevent overlapping runs. The account's limit is 10 concurrent executions and AWS keeps at least 10 unreserved, so none can be reserved.
+**Rationale:** A separate function keeps detection runs from slowing the app (the API's cold start stays ~2 s, without torch). Deduplicating by image avoids storing the same detections twice when the schedule fires before Earth Engine has a new image. Overlap is prevented in the database because concurrency can't be reserved.
+**Consequences:**
+- Re-apply `terraform/bootstrap` once: the deploy role needs `scheduler:*` on the project's schedules.
+- `detection_runs` measures the automatic operation (latency from capture to detection, run duration, failures), usable as results.
+- Cost: ~144 runs a day of ~50 s at 3 GB, roughly within Lambda's free tier to a few dollars a month (estimate); also 144 runs a day of Earth Engine requests.
+- With the model's 0.08 threshold, the number of detections per run over the whole country needs checking before enabling the schedule.
+
