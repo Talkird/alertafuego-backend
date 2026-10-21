@@ -1,0 +1,5 @@
+{
+  "base_channels": 16,
+  "depth": 3,
+  "threshold": 0.08
+}

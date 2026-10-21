@@ -10,3 +10,6 @@ model/dataset
 model/scripts
 model/checkpoints/*.png
 model/checkpoints/*.csv
+model/checkpoints/a-baseline
+model/checkpoints/b-shift
+model/checkpoints/c-shift-32

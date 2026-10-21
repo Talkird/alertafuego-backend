@@ -3,7 +3,10 @@
 __pycache__/
 *.pyc
 model/dataset/
-model/checkpoints/
+model/checkpoints/*
+!model/checkpoints/a-baseline/
+!model/checkpoints/b-shift/
+!model/checkpoints/c-shift-32/
 model/*.zip
 debug_images/
 
