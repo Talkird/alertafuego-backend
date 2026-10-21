@@ -114,6 +114,9 @@ de diferencia entre la predicción y el foco, el error típico de geolocalizaci�
 GOES-VIIRS. `python -m model.scripts.evaluate_model` re-evalúa un checkpoint en varios
 umbrales.
 
+Los tres modelos evaluados en la tesis (`a-baseline`, `b-shift` y `c-shift-32`) están
+versionados en `model/checkpoints/<nombre>/`. Producción usa `b-shift`.
+
 Para desplegar un modelo, subir los tres archivos al bucket de artefactos (ver
 `terraform/README.md`).
 
