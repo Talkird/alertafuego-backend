@@ -351,3 +351,71 @@ Patches, test, threshold 0.08, by hour: fire-free patches with any prediction 9.
 - Stage 3 has to remove the shift leak (augment without a zero border) before any other training change is worth measuring.
 - Report recall per fire-strength band, and set the thesis target on fires GOES can physically see.
 - The 30-scene set is fixed (`scenes.csv`, seed 0) so later models are scored on the same scenes.
+
+### [2026-10-22] — FDCF baseline: NOAA's fire product beats b-shift on full scenes, and is published 28 minutes sooner
+
+**Context:** Stage 2 of the recall plan. NOAA's GOES-19 fire product (`NOAA/GOES/19/FDCF`) is on the same 2 km grid as the imagery the model uses, and is already cached for the 30 evaluation scenes. It is the operational baseline any GOES model has to beat, and a candidate to combine with the model for recall.
+**Decision:**
+- `evaluate_scenes score` also scores FDCF and "model OR FDCF" on the same scenes and metrics. An FDCF fire pixel is a Mask code in 10-15 (processed, saturated, cloud-contaminated, high, medium and low probability fire) or 30-35 (the same, temporally filtered). FDCF has no threshold.
+- Publishing delay measured from Earth Engine's ingestion timestamp (`system:version` minus `system:time_start`) over 414 images per collection (2026-10-19 to 2026-10-22). It matches the age of the newest images checked directly (41 and 11 minutes).
+**Results (30 scenes):**
+
+| Detector | Fire pixel recall (day / night) | Cluster recall | Precision (VIIRS ±12 h) | False pixels / scene | False clusters / scene |
+|---|---|---|---|---|---|
+| FDCF | 17.3% (21.4 / 5.0) | 12.2% | 70.9% | 14 | 5.3 |
+| b-shift, 0.08 (deployed) | 9.9% (11.1 / 6.2) | 6.7% | 11.6% | 92 | 63 |
+| b-shift, 0.65 | 5.6% (6.3 / 3.7) | 3.4% | 11.5% | 37 | 32 |
+| b-shift 0.08 OR FDCF | 19.3% (23.4 / 7.4) | 14.2% | 27.5% | 106 | 68 |
+| b-shift 0.65 OR FDCF | 18.1% (22.3 / 5.8) | 13.1% | 41.9% | 51 | 37 |
+
+By fire strength (from the stage 1 entry), FDCF finds 1-8% of fire pixels under 20 MW, 17% at 20-50 MW, 34% at 50-100 MW and 75% over 100 MW, about twice the model in every band above 5 MW.
+
+Publishing delay after capture: GOES-19 imagery (MCMIPF, what the model reads) median 40 min (p10 31, p90 56, max 92); FDCF median 12 min (p10 12, p90 14, max 26).
+
+Per scene, threshold 0.08:
+
+| Scene (UTC) | Day/night | VIIRS fire px | Recall: model / FDCF / OR | False clusters: model / FDCF |
+|---|---|---|---|---|
+| 2025-04-25 04:50 | night | 78 | 0% / 0% / 0% | 49 / 0 |
+| 2025-04-28 17:40 | day | 528 | 6% / 13% / 16% | 152 / 1 |
+| 2025-05-30 05:20 | night | 57 | 7% / 0% / 7% | 8 / 0 |
+| 2025-05-30 19:20 | day | 15 | 0% / 0% / 0% | 3 / 0 |
+| 2025-06-27 17:20 | day | 313 | 4% / 13% / 15% | 66 / 3 |
+| 2025-06-28 05:00 | night | 40 | 10% / 0% / 10% | 4 / 0 |
+| 2025-07-25 04:30 | night | 8 | 0% / 0% / 0% | 22 / 0 |
+| 2025-07-28 17:40 | day | 28 | 4% / 0% / 4% | 37 / 0 |
+| 2025-08-28 18:20 | day | 1396 | 10% / 18% / 20% | 94 / 10 |
+| 2025-08-29 05:10 | night | 316 | 1% / 2% / 2% | 107 / 0 |
+| 2025-09-25 17:30 | day | 784 | 8% / 21% / 22% | 128 / 10 |
+| 2025-09-26 05:10 | night | 362 | 2% / 3% / 3% | 16 / 0 |
+| 2025-09-26 19:10 | day | 118 | 37% / 68% / 75% | 52 / 25 |
+| 2025-10-27 17:50 | day | 47 | 0% / 4% / 4% | 61 / 4 |
+| 2025-10-28 19:00 | day | 75 | 0% / 8% / 8% | 32 / 1 |
+| 2025-10-30 06:10 | night | 19 | 0% / 0% / 0% | 14 / 0 |
+| 2025-11-25 04:20 | night | 113 | 32% / 33% / 35% | 69 / 1 |
+| 2025-11-28 19:10 | day | 15 | 0% / 0% / 0% | 48 / 3 |
+| 2025-11-29 06:30 | night | 0 | - / - / - | 12 / 0 |
+| 2025-11-30 17:00 | day | 12 | 8% / 8% / 8% | 45 / 18 |
+| 2025-11-30 18:30 | day | 33 | 18% / 30% / 30% | 35 / 8 |
+| 2025-12-25 05:20 | night | 61 | 18% / 16% / 23% | 20 / 11 |
+| 2025-12-27 18:30 | day | 132 | 43% / 66% / 67% | 140 / 8 |
+| 2025-12-29 18:00 | day | 114 | 32% / 46% / 46% | 168 / 11 |
+| 2026-01-29 05:50 | night | 109 | 10% / 3% / 10% | 56 / 0 |
+| 2026-01-31 18:00 | day | 186 | 17% / 23% / 28% | 187 / 26 |
+| 2026-02-25 05:40 | night | 70 | 0% / 0% / 0% | 69 / 0 |
+| 2026-02-26 19:30 | day | 7 | 0% / 0% / 0% | 67 / 11 |
+| 2026-03-26 04:50 | night | 65 | 8% / 0% / 8% | 7 / 0 |
+| 2026-03-28 17:10 | day | 7 | 0% / 29% / 29% | 134 / 7 |
+
+**Findings:**
+- FDCF finds about 1.7x the model's fires with about 1/12 of its false clusters. Today's model adds nothing over FDCF by day; OR-ing them adds 2 points of recall and 63 false clusters per scene.
+- At night both find little (5-6%). The model finds some night fires FDCF misses (2025-06-28, 2026-01-29, 2026-03-26), the only place it adds recall.
+- FDCF is in Earth Engine ~28 minutes before the imagery the model needs. An FDCF-based alert could reach users ~30 minutes sooner than today's detection.
+- FDCF night precision is low (17.7%) on few pixels: 13.6 false pixels per scene but 0.9 false clusters, so a few persistent hot spots, likely industrial.
+**Alternatives considered:**
+- Count only FDCF's high-confidence codes (10, 11, 13, 30, 31, 33): left for later; the full set is FDCF's own definition of a fire pixel.
+- Fetch FDCF per test sample for patch-level comparison: deferred (needs an export), and the patch metrics are unreliable anyway (see the stage 1 entry).
+**Consequences:**
+- The thesis can report FDCF as the operational baseline on the same 30 scenes.
+- Until a retrained model beats FDCF on full scenes, the system can't claim the model improves on NOAA's product. The best production option today, for recall and latency, is FDCF alone, or FDCF plus the model at night only.
+- Any retrained model is compared against this table (same scenes, same metrics).

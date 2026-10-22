@@ -9,7 +9,8 @@ Two steps:
            where available, then random extras up to --scenes) and caches each one
            once from Earth Engine in --cache-dir: the 16-band raster, the FDCF fire
            Mask, and every VIIRS detection within 12 h. Re-running skips cached scenes.
-    score  runs offline on the cache and writes one row per scene and threshold.
+    score  runs offline on the cache and writes one row per scene and threshold, for
+           the model, NOAA's FDCF fire product (no threshold), and model OR FDCF.
 
 Example:
     python -m model.scripts.evaluate_scenes fetch
@@ -56,6 +57,9 @@ from model.training.normalization import load_band_stats
 logger = logging.getLogger(__name__)
 
 FDCF_COLLECTION_ID = "NOAA/GOES/19/FDCF"
+#: FDCF Mask codes for a fire pixel: 10-15 (processed, saturated, cloud contaminated,
+#: high, medium and low probability) and 30-35 (the same, temporally filtered).
+FDCF_FIRE_CODES = (10, 11, 12, 13, 14, 15, 30, 31, 32, 33, 34, 35)
 #: Same window training uses to pair a VIIRS detection with a GOES image.
 OVERPASS_WINDOW = timedelta(minutes=15)
 #: A prediction with any VIIRS detection this close in time isn't counted as false.
@@ -320,7 +324,8 @@ def score(args: argparse.Namespace) -> None:
         if not raster_path.exists():
             logger.warning("Scene %s is not cached, skipped (run fetch)", scene["scene"])
             continue
-        raster = np.load(raster_path)["raster"]
+        cached = np.load(raster_path)
+        raster = cached["raster"]
         _, height, width = raster.shape
 
         if scored_area is None:
@@ -351,11 +356,19 @@ def score(args: argparse.Namespace) -> None:
         fires = _viirs_mask(overpass, (height, width), bbox) & scored_area
         confirmed = _viirs_mask(viirs, (height, width), bbox)
 
+        scene_row = {"scene": scene["scene"], "goes_time": scene["goes_time"], "daynight": scene["daynight"]}
+        fdcf = np.isin(cached["fdcf"], FDCF_FIRE_CODES) & scored_area
+        results.append(scene_row | {"detector": "fdcf", "threshold": ""} | score_detection(fdcf, fires, confirmed))
         for threshold in thresholds:
             predicted = (probabilities >= threshold) & scored_area
-            row = {"scene": scene["scene"], "goes_time": scene["goes_time"], "daynight": scene["daynight"],
-                   "detector": "model", "threshold": threshold}
-            results.append(row | score_detection(predicted, fires, confirmed))
+            results.append(
+                scene_row | {"detector": "model", "threshold": threshold} | score_detection(predicted, fires, confirmed)
+            )
+            results.append(
+                scene_row
+                | {"detector": "model|fdcf", "threshold": threshold}
+                | score_detection(predicted | fdcf, fires, confirmed)
+            )
         logger.info("Scored %s: %d fire pixels", scene["scene"], int(fires.sum()))
 
     with output.open("w", newline="", encoding="utf-8") as f:
@@ -372,15 +385,15 @@ def _log_summary(results: list[dict]) -> None:
     for row in results:
         for daynight in ("all", row["daynight"]):
             groups.setdefault((row["detector"], row["threshold"], daynight), []).append(row)
-    print(f"\n{'detector':>10}  {'threshold':>9}  {'scenes':>6}  {'fire_rec':>8}  {'clust_rec':>9}"
+    print(f"\n{'detector':>16}  {'threshold':>9}  {'scenes':>6}  {'fire_rec':>8}  {'clust_rec':>9}"
           f"  {'prec_tol':>8}  {'false_px/scene':>14}  {'false_clusters/scene':>20}")
-    for (detector, threshold, daynight), rows in sorted(groups.items(), key=lambda kv: (kv[0][0], kv[0][1], kv[0][2])):
+    for (detector, threshold, daynight), rows in sorted(groups.items(), key=lambda kv: (kv[0][0], str(kv[0][1]), kv[0][2])):
         total = {k: sum(r[k] for r in rows) for k in
                  ("fire_pixels", "fire_pixels_hit", "fire_clusters", "fire_clusters_hit", "predicted_pixels",
                   "false_pixels", "false_clusters")}
         n = len(rows)
         print(
-            f"{detector + ' ' + daynight:>10}  {threshold:>9}  {n:>6}"
+            f"{detector + ' ' + daynight:>16}  {threshold:>9}  {n:>6}"
             f"  {total['fire_pixels_hit'] / max(1, total['fire_pixels']):>8.4f}"
             f"  {total['fire_clusters_hit'] / max(1, total['fire_clusters']):>9.4f}"
             f"  {(total['predicted_pixels'] - total['false_pixels']) / max(1, total['predicted_pixels']):>8.4f}"
