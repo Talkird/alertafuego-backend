@@ -26,7 +26,8 @@ from model.training.dataset import FirePatchDataset, list_split_files
 from model.training.losses import BCETverskyLoss
 from model.training.model import TinyUNet
 from model.training.normalization import compute_band_stats, save_band_stats
-from model.training.train import evaluate, evaluate_thresholds, fit, plot_training_curves
+from model.training.strata import sample_strata
+from model.training.train import evaluate, evaluate_by_stratum, evaluate_thresholds, fit, plot_training_curves
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,9 @@ logger = logging.getLogger(__name__)
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-dir", type=Path, default=Path("model/dataset"))
+    parser.add_argument(
+        "--manifest", default="manifest.csv", help="Manifest file inside --dataset-dir (see merge_datasets)."
+    )
     parser.add_argument("--checkpoint-dir", type=Path, default=Path("model/checkpoints"))
     parser.add_argument("--epochs", type=int, default=None, help="Overrides the default epoch count.")
     parser.add_argument("--batch-size", type=int, default=None, help="Overrides the default batch size.")
@@ -79,7 +83,7 @@ def main() -> None:
     }
     cfg = replace(default_config(checkpoint_dir=args.checkpoint_dir), **overrides)
 
-    manifest_path = args.dataset_dir / "manifest.csv"
+    manifest_path = args.dataset_dir / args.manifest
     device = torch.device(
         "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
     )
@@ -147,6 +151,13 @@ def main() -> None:
     test_centered_metrics = evaluate(model, test_centered_loader, loss_fn, device, threshold)
     logger.info("Test metrics: %s", test_metrics)
     logger.info("Test metrics, centered patches: %s", test_centered_metrics)
+    test_strata = sample_strata(manifest_path, args.dataset_dir, test_ds.files)
+    test_by_stratum = {
+        label: sweep[0]
+        for label, sweep in evaluate_by_stratum(
+            model, test_ds, test_strata, loss_fn, device, [threshold], loader_kwargs
+        ).items()
+    }
 
     results = {
         "config": {key: str(value) if isinstance(value, Path) else value for key, value in vars(cfg).items()},
@@ -155,6 +166,7 @@ def main() -> None:
         "val_sweep": val_sweep,
         "test": test_metrics,
         "test_centered": test_centered_metrics,
+        "test_by_stratum": test_by_stratum,
     }
     (cfg.checkpoint_dir / "results.json").write_text(json.dumps(results, indent=2) + "\n")
 

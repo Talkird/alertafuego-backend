@@ -15,3 +15,4 @@ debug_images/
 terraform/backend.hcl
 crash.log
 logs/
+model/scene_eval/

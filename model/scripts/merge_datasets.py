@@ -9,8 +9,15 @@ was exported with, so val and test contain days from every month.
 
 Re-run it after adding or removing a month; the combined manifest is rewritten.
 
+--holdout-months writes a second manifest (manifest_holdout.csv) where whole months
+are the test set instead: every sample of those months becomes test, and the other
+months' test days join their val days. Nothing moves into train, so train is the
+same set of days as in manifest.csv minus the held-out months. Adjacent days share
+fires, so day-based test scores run optimistic; held-out months don't.
+
 Example:
     python -m model.scripts.merge_datasets
+    python -m model.scripts.merge_datasets --holdout-months 2025-07 2026-01
 """
 
 import argparse
@@ -22,12 +29,16 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 MANIFEST_FILENAME = "manifest.csv"
+HOLDOUT_MANIFEST_FILENAME = "manifest_holdout.csv"
 FIELDNAMES = ["filename", "lat", "lon", "goes_time", "has_fire", "split"]
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-root", type=Path, default=Path("model/dataset"))
+    parser.add_argument(
+        "--holdout-months", nargs="+", default=None, help=f"Also write {HOLDOUT_MANIFEST_FILENAME} with these as test."
+    )
     return parser.parse_args()
 
 
@@ -48,6 +59,25 @@ def _read_month(month_dir: Path, dataset_root: Path) -> list[dict]:
     return rows
 
 
+def _write_manifest(path: Path, rows: list[dict], n_exports: int) -> None:
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    counts = collections.Counter(row["split"] for row in rows)
+    logger.info(
+        "Wrote %s: %d samples from %d export(s) (train %d, val %d, test %d)",
+        path, len(rows), n_exports, counts["train"], counts["val"], counts["test"],
+    )
+
+
+def _holdout_split(row: dict, holdout_months: set[str]) -> str:
+    if row["filename"].split("/")[0] in holdout_months:
+        return "test"
+    return "val" if row["split"] == "test" else row["split"]
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     args = _parse_args()
@@ -66,17 +96,15 @@ def main() -> None:
         )
         all_rows.extend(rows)
 
-    output_path = args.dataset_root / MANIFEST_FILENAME
-    with output_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
-        writer.writeheader()
-        writer.writerows(all_rows)
+    _write_manifest(args.dataset_root / MANIFEST_FILENAME, all_rows, len(month_dirs))
 
-    counts = collections.Counter(row["split"] for row in all_rows)
-    logger.info(
-        "Wrote %s: %d samples from %d export(s) (train %d, val %d, test %d)",
-        output_path, len(all_rows), len(month_dirs), counts["train"], counts["val"], counts["test"],
-    )
+    if args.holdout_months:
+        holdout_months = set(args.holdout_months)
+        unknown = holdout_months - {month_dir.name for month_dir in month_dirs}
+        if unknown:
+            raise SystemExit(f"--holdout-months not found under {args.dataset_root}: {sorted(unknown)}")
+        holdout_rows = [{**row, "split": _holdout_split(row, holdout_months)} for row in all_rows]
+        _write_manifest(args.dataset_root / HOLDOUT_MANIFEST_FILENAME, holdout_rows, len(month_dirs))
 
 
 if __name__ == "__main__":

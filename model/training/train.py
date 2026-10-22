@@ -10,7 +10,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch
 from torch import nn, optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from model.training.config import THRESHOLD_CANDIDATES, TrainingConfig
 from model.training.metrics import confusion_counts, f1, f_beta, fire_counts, iou, precision, recall, tolerant_counts
@@ -103,6 +103,8 @@ def evaluate_thresholds(
                 "fire_recall": fire_recall,
                 "false_alarm_rate": alarms / no_fire if no_fire else 0.0,
                 "f2": f_beta(precision_tol, fire_recall, 2),
+                "fires": int(fires),
+                "no_fire_samples": int(no_fire),
             }
         )
     return results
@@ -110,6 +112,31 @@ def evaluate_thresholds(
 
 def evaluate(model: nn.Module, loader: DataLoader, loss_fn: nn.Module, device: torch.device, threshold: float) -> dict:
     return evaluate_thresholds(model, loader, loss_fn, device, [threshold])[0]
+
+
+def evaluate_by_stratum(
+    model: nn.Module,
+    dataset: Dataset,
+    strata: list[tuple[str, ...]],
+    loss_fn: nn.Module,
+    device: torch.device,
+    thresholds: list[float],
+    loader_kwargs: dict,
+) -> dict[str, list[dict]]:
+    """evaluate_thresholds on each subset of dataset sharing a stratum label (see
+    strata.sample_strata: each sample has several labels, e.g. its hour and day/night),
+    keyed by label, sorted."""
+    indices: dict[str, list[int]] = {}
+    for index, labels in enumerate(strata):
+        for label in labels:
+            indices.setdefault(label, []).append(index)
+    return {
+        label: evaluate_thresholds(
+            model, DataLoader(Subset(dataset, indices[label]), shuffle=False, **loader_kwargs), loss_fn, device,
+            thresholds,
+        )
+        for label in sorted(indices)
+    }
 
 
 def fit(
