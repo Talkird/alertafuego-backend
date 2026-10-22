@@ -55,17 +55,21 @@ def default_config(checkpoint_dir: Path | None = None) -> TrainingConfig:
 #: Candidates for the segmentation threshold, chosen on val. Fire pixels are rare,
 #: so the model's fire probabilities run low: the best threshold can sit well
 #: under 0.1, hence the fine steps at the bottom (and lower when chasing recall).
-THRESHOLD_CANDIDATES = [0.005, 0.01, 0.02, 0.04, 0.06, 0.08] + [round(0.05 * i, 2) for i in range(2, 19)]  # ... 0.90
+THRESHOLD_CANDIDATES = [0.001, 0.002, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08] + [round(0.05 * i, 2) for i in range(2, 19)]
 
 
 @dataclass(frozen=True)
 class ModelConfig:
     """What inference needs to rebuild and use a checkpoint: its size and the
-    threshold chosen on val. Saved next to model_best.pt as model_config.json."""
+    threshold chosen on val. Saved next to model_best.pt as model_config.json.
+
+    night_threshold, when set, applies where the sun is below the horizon and
+    threshold everywhere else (evaluate_scenes calibrate picks both)."""
 
     base_channels: int
     depth: int
     threshold: float
+    night_threshold: float | None = None
 
 
 MODEL_CONFIG_FILENAME = "model_config.json"

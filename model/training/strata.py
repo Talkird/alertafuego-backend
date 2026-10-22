@@ -5,41 +5,43 @@ whole day, so a single score hides how the model behaves at each time of day.
 """
 
 import csv
-import math
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 
-def solar_zenith_deg(lat: float, lon: float, when: datetime) -> float:
+
+def solar_zenith_deg(lat, lon, when: datetime):
     """Solar zenith angle in degrees at (lat, lon) and UTC time `when`, from NOAA's
-    general solar position equations (accurate to well under a degree)."""
+    general solar position equations (accurate to well under a degree). lat and lon
+    can be numbers or numpy arrays."""
     day_of_year = when.timetuple().tm_yday
     hour = when.hour + when.minute / 60 + when.second / 3600
-    gamma = 2 * math.pi / 365 * (day_of_year - 1 + (hour - 12) / 24)
+    gamma = 2 * np.pi / 365 * (day_of_year - 1 + (hour - 12) / 24)
     eqtime = 229.18 * (
         0.000075
-        + 0.001868 * math.cos(gamma)
-        - 0.032077 * math.sin(gamma)
-        - 0.014615 * math.cos(2 * gamma)
-        - 0.040849 * math.sin(2 * gamma)
+        + 0.001868 * np.cos(gamma)
+        - 0.032077 * np.sin(gamma)
+        - 0.014615 * np.cos(2 * gamma)
+        - 0.040849 * np.sin(2 * gamma)
     )
     decl = (
         0.006918
-        - 0.399912 * math.cos(gamma)
-        + 0.070257 * math.sin(gamma)
-        - 0.006758 * math.cos(2 * gamma)
-        + 0.000907 * math.sin(2 * gamma)
-        - 0.002697 * math.cos(3 * gamma)
-        + 0.00148 * math.sin(3 * gamma)
+        - 0.399912 * np.cos(gamma)
+        + 0.070257 * np.sin(gamma)
+        - 0.006758 * np.cos(2 * gamma)
+        + 0.000907 * np.sin(2 * gamma)
+        - 0.002697 * np.cos(3 * gamma)
+        + 0.00148 * np.sin(3 * gamma)
     )
     true_solar_minutes = hour * 60 + eqtime + 4 * lon
-    hour_angle = math.radians(true_solar_minutes / 4 - 180)
-    lat_rad = math.radians(lat)
-    cos_zenith = math.sin(lat_rad) * math.sin(decl) + math.cos(lat_rad) * math.cos(decl) * math.cos(hour_angle)
-    return math.degrees(math.acos(max(-1.0, min(1.0, cos_zenith))))
+    hour_angle = np.radians(true_solar_minutes / 4 - 180)
+    lat_rad = np.radians(lat)
+    cos_zenith = np.sin(lat_rad) * np.sin(decl) + np.cos(lat_rad) * np.cos(decl) * np.cos(hour_angle)
+    return np.degrees(np.arccos(np.clip(cos_zenith, -1.0, 1.0)))
 
 
-def is_day(lat: float, lon: float, when: datetime) -> bool:
+def is_day(lat, lon, when: datetime):
     """Sun above the horizon. In daylight the 3.9 um fire band also carries reflected
     sunlight, the main source of daytime false positives."""
     return solar_zenith_deg(lat, lon, when) < 90

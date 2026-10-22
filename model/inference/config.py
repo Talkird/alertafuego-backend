@@ -20,7 +20,8 @@ class InferenceConfig:
     demo_bbox: BBox
     argentina_bbox: BBox
     chunk_size_px: int
-    patch_size_px: int
+    #: Average predictions over the 8 flips and rotations (predictor.predict_raster).
+    tta: bool
     checkpoint_dir: Path
 
 
@@ -29,6 +30,6 @@ def default_config(checkpoint_dir: Path | None = None) -> InferenceConfig:
         demo_bbox=DEMO_BBOX,
         argentina_bbox=default_pipeline_config().argentina_bbox,
         chunk_size_px=CHUNK_SIZE_PX,
-        patch_size_px=32,
+        tta=False,
         checkpoint_dir=checkpoint_dir if checkpoint_dir is not None else Path("model/checkpoints"),
     )

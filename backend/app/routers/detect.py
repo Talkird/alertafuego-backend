@@ -66,7 +66,7 @@ def _to_response(result: "DetectionResult") -> DetectionResponse:
         threshold=result.threshold,
         chunk_count=result.chunk_count,
         detection_count=len(result.detections),
-        detections=[Detection(lat=lat, lon=lon, probability=prob) for lat, lon, prob, _ in result.detections],
+        detections=[Detection(lat=lat, lon=lon, probability=prob) for lat, lon, prob, _, _ in result.detections],
     )
 
 
@@ -76,10 +76,12 @@ def _run(ctx: "InferenceContext", bbox: BBox, db: Session) -> DetectionResponse:
     from model.inference.raster_fetch import NoImageAvailableError
     from model.inference.service import run_detection
 
-    # The threshold chosen on val when the model was trained.
-    threshold = load_model_config(ctx.cfg.checkpoint_dir).threshold
+    # The thresholds chosen on val for this checkpoint.
+    model_cfg = load_model_config(ctx.cfg.checkpoint_dir)
     try:
-        result = run_detection(ctx, bbox, threshold, debug_image_dir=_debug_image_dir())
+        result = run_detection(
+            ctx, bbox, model_cfg.threshold, debug_image_dir=_debug_image_dir(), night_threshold=model_cfg.night_threshold
+        )
     except (ee.EEException, NoImageAvailableError) as exc:
         raise HTTPException(status_code=503, detail=f"Earth Engine unavailable: {exc}") from exc
     detection_ids = save_detections(db, result)

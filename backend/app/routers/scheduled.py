@@ -68,8 +68,11 @@ def scheduled_detection(request: Request, db: Session = Depends(get_db)) -> dict
         from model.inference.service import run_detection
 
         ctx = inference_ctx(request.app)
-        threshold = load_model_config(ctx.cfg.checkpoint_dir).threshold
-        result = run_detection(ctx, ctx.cfg.argentina_bbox, threshold, goes_image=goes_image)
+        model_cfg = load_model_config(ctx.cfg.checkpoint_dir)
+        result = run_detection(
+            ctx, ctx.cfg.argentina_bbox, model_cfg.threshold, goes_image=goes_image,
+            night_threshold=model_cfg.night_threshold,
+        )
         detection_ids = save_detections(db, result)
         alert_count = process_new_detections(db, detection_ids)
     except Exception as exc:
@@ -88,7 +91,7 @@ def scheduled_detection(request: Request, db: Session = Depends(get_db)) -> dict
     return {
         "status": "ok",
         "image_time": image_time.isoformat(),
-        "threshold": threshold,
+        "threshold": result.threshold,
         "detections": len(detection_ids),
         "alerts": alert_count,
     }

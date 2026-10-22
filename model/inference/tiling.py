@@ -1,10 +1,9 @@
-"""Stitch fetched raster chunks into one canvas and slice it into model-sized tiles."""
+"""Stitch fetched raster chunks into one canvas and map its pixels to coordinates."""
 
 import numpy as np
 
 from model.data_pipeline.config import BBox, PATCH_FILL_VALUE
 from model.data_pipeline.patches import degrees_per_pixel, target_projection
-from model.training.dataset import center_crop
 
 
 def assemble_raster(chunks: list[tuple[BBox, np.ndarray]], bbox: BBox) -> np.ndarray:
@@ -26,24 +25,6 @@ def assemble_raster(chunks: list[tuple[BBox, np.ndarray]], bbox: BBox) -> np.nda
         canvas[:, row_start:row_end, col_start:col_end] = raster[:, : row_end - row_start, : col_end - col_start]
 
     return canvas
-
-
-def tile_raster(raster: np.ndarray, tile_size: int = 32) -> tuple[np.ndarray, list[tuple[int, int]]]:
-    """Crop to a clean multiple of tile_size per side, then slice into non-overlapping
-    tiles. Returns (tiles, offsets) where offsets[i] is tile i's (row, col) top-left
-    pixel position in the cropped raster."""
-    _, height, width = raster.shape
-    cropped_height = (height // tile_size) * tile_size
-    cropped_width = (width // tile_size) * tile_size
-    cropped = center_crop(raster, (cropped_height, cropped_width))
-
-    tiles = []
-    offsets = []
-    for row in range(0, cropped_height, tile_size):
-        for col in range(0, cropped_width, tile_size):
-            tiles.append(cropped[:, row : row + tile_size, col : col + tile_size])
-            offsets.append((row, col))
-    return np.stack(tiles, axis=0), offsets
 
 
 def pixel_to_latlon(row_px: int, col_px: int, raster_bbox: BBox, raster_shape: tuple[int, int]) -> tuple[float, float]:

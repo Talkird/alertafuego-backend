@@ -40,9 +40,9 @@ def save_detections(session: Session, result: "DetectionResult") -> list[int]:
             "bbox_south": result.bbox.south,
             "bbox_east": result.bbox.east,
             "bbox_north": result.bbox.north,
-            "threshold": result.threshold,
+            "threshold": threshold,
         }
-        for lat, lon, probability, image in result.detections
+        for lat, lon, probability, threshold, image in result.detections
     ]
     ids = list(session.scalars(insert(Detection).returning(Detection.id), rows))
     session.commit()

@@ -2,22 +2,30 @@
 
 Patch metrics (evaluate_model) only see 32x32 patches around VIIRS fires or random
 fire-free land. Here the model runs on the whole country, through the inference
-tiling, at GOES-19 images matched to VIIRS overpasses on val/test days.
+code (predictor.predict_raster), at GOES-19 images matched to VIIRS overpasses on
+val/test days.
 
 Two steps:
     fetch  picks the scenes (fixed, seeded: one day and one night overpass per month
            where available, then random extras up to --scenes) and caches each one
            once from Earth Engine in --cache-dir: the 16-band raster, the FDCF fire
            Mask, and every VIIRS detection within 12 h. Re-running skips cached scenes.
+    calibrate  offline: picks the day and the night threshold with the best F2 on the
+           val scenes and saves them in the checkpoint's model_config.json.
     score  runs offline on the cache and writes one row per scene and threshold, for
            the model, NOAA's FDCF fire product (no threshold), and model OR FDCF.
+           Without --thresholds, the checkpoint's own (day/night) thresholds.
 
 Example:
     python -m model.scripts.evaluate_scenes fetch
-    python -m model.scripts.evaluate_scenes score --checkpoint-dir model/checkpoints/b-shift
+    python -m model.scripts.evaluate_scenes calibrate --checkpoint-dir model/checkpoints/b-shift
+    python -m model.scripts.evaluate_scenes score --checkpoint-dir model/checkpoints/b-shift --split test
     python -m model.scripts.evaluate_scenes score --checkpoint-dir model/checkpoints/b-shift --thresholds 0.08 0.65
 
-Scoring, inside Argentina's polygon and the tiled area:
+--split val or test scores only the scenes from that split's days: choose settings
+on val scenes, report test scenes.
+
+Scoring, inside Argentina's polygon:
 - Fires: VIIRS detections (confidence >= nominal, as in training) within 15 minutes
   of the scene. fire_recall: fire pixels with a prediction within 1 pixel.
   cluster_recall: groups of adjacent fire pixels (one fire front) with any of them
@@ -33,6 +41,7 @@ import csv
 import json
 import logging
 import random
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -48,10 +57,11 @@ from model.data_pipeline.matching import MAX_VIIRS_FEATURES_PER_QUERY, _fire_poi
 from model.data_pipeline.negative_sampling import load_argentina_land_geometry
 from model.data_pipeline.patches import target_projection
 from model.inference.config import default_config as default_inference_config
-from model.inference.predictor import load_model, predict_tiles
+from model.inference.predictor import load_model, predict_raster
 from model.inference.raster_fetch import compute_chunk_grid, fetch_calibrated_chunks
-from model.inference.tiling import assemble_raster, tile_raster
-from model.training.config import load_model_config
+from model.inference.tiling import assemble_raster
+from model.training.config import THRESHOLD_CANDIDATES, load_model_config, save_model_config
+from model.training.metrics import f_beta
 from model.training.normalization import load_band_stats
 
 logger = logging.getLogger(__name__)
@@ -67,6 +77,9 @@ CONFIRM_WINDOW = timedelta(hours=12)
 #: VIIRS is queried in slices this long, filtered by acquisition time on the server,
 #: so each query holds about one overpass per satellite and stays under the feature cap.
 VIIRS_SLICE = timedelta(hours=3)
+#: On whole scenes the best thresholds sit far below the patch ones (b-shift: ~0.001),
+#: so calibration also tries these.
+SCENE_THRESHOLD_CANDIDATES = [0.00005, 0.0001, 0.0002, 0.0005] + THRESHOLD_CANDIDATES
 SCENES_FILENAME = "scenes.csv"
 POLYGON_FILENAME = "argentina.geojson"
 RESULTS_FIELDNAMES = [
@@ -78,7 +91,7 @@ RESULTS_FIELDNAMES = [
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", choices=["fetch", "score"])
+    parser.add_argument("command", choices=["fetch", "calibrate", "score"])
     parser.add_argument("--cache-dir", type=Path, default=Path("model/scene_eval"))
     parser.add_argument("--dataset-dir", type=Path, default=Path("model/dataset"))
     parser.add_argument("--scenes", type=int, default=30, help="fetch: how many scenes to pick.")
@@ -86,6 +99,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-dir", type=Path, default=Path("model/checkpoints"))
     parser.add_argument("--thresholds", type=float, nargs="+", default=None, help="Default: the checkpoint's.")
     parser.add_argument("--output", type=Path, default=None, help="Default: <checkpoint-dir>/scene_results.csv.")
+    parser.add_argument("--split", choices=["val", "test"], default=None, help="score: only this split's scenes.")
+    parser.add_argument("--tta", action="store_true", help="score: average over the 8 flips and rotations.")
     return parser.parse_args()
 
 
@@ -304,7 +319,15 @@ def score_detection(predicted: np.ndarray, fires: np.ndarray, confirmed: np.ndar
     }
 
 
-def score(args: argparse.Namespace) -> None:
+def _load_scenes(args: argparse.Namespace, split: str | None) -> list[dict]:
+    with (args.cache_dir / SCENES_FILENAME).open(newline="", encoding="utf-8") as f:
+        return [s for s in csv.DictReader(f) if split in (None, s["split"])]
+
+
+def _score_scenes(args: argparse.Namespace, scenes: list[dict], thresholds: list[float] | None) -> list[dict]:
+    """Rows of score_detection results per scene for FDCF, and for the model and model
+    OR FDCF at each threshold. thresholds None: the checkpoint's own (threshold, or
+    night_threshold on night scenes), labeled "config"."""
     cfg = default_inference_config(checkpoint_dir=args.checkpoint_dir)
     bbox = cfg.argentina_bbox
     device = torch.device(
@@ -312,12 +335,9 @@ def score(args: argparse.Namespace) -> None:
     )
     model = load_model(args.checkpoint_dir / "model_best.pt", device)
     band_stats = load_band_stats(args.checkpoint_dir / "norm_stats.json")
-    thresholds = args.thresholds or [load_model_config(args.checkpoint_dir).threshold]
+    model_cfg = load_model_config(args.checkpoint_dir)
     polygon = shape(json.loads((args.cache_dir / POLYGON_FILENAME).read_text()))
-    with (args.cache_dir / SCENES_FILENAME).open(newline="", encoding="utf-8") as f:
-        scenes = list(csv.DictReader(f))
 
-    output = args.output or args.checkpoint_dir / "scene_results.csv"
     results, scored_area = [], None
     for scene in scenes:
         raster_path = args.cache_dir / f"{scene['scene']}.npz"
@@ -329,22 +349,13 @@ def score(args: argparse.Namespace) -> None:
         _, height, width = raster.shape
 
         if scored_area is None:
-            # Argentina's polygon, within the center crop tile_raster() keeps. Every
-            # scene shares the grid, so this is computed once.
+            # Argentina's polygon. Every scene shares the grid, so this is computed once.
             lat = bbox.north - (np.arange(height) + 0.5) / height * (bbox.north - bbox.south)
             lon = bbox.west + (np.arange(width) + 0.5) / width * (bbox.east - bbox.west)
             lon_grid, lat_grid = np.meshgrid(lon, lat)
             scored_area = shapely.contains_xy(polygon, lon_grid, lat_grid)
-            size = cfg.patch_size_px
-            crop_top, crop_left = (height - height // size * size) // 2, (width - width // size * size) // 2
-            in_crop = np.zeros_like(scored_area)
-            in_crop[crop_top : crop_top + height // size * size, crop_left : crop_left + width // size * size] = True
-            scored_area &= in_crop
 
-        tiles, offsets = tile_raster(raster, cfg.patch_size_px)
-        probabilities = np.zeros((height, width), dtype=np.float32)
-        for (row, col), tile_probs in zip(offsets, predict_tiles(model, band_stats, tiles, device)):
-            probabilities[crop_top + row : crop_top + row + size, crop_left + col : crop_left + col + size] = tile_probs
+        probabilities = predict_raster(model, band_stats, raster, device, tta=args.tta)
 
         when = datetime.fromisoformat(scene["goes_time"])
         with (args.cache_dir / f"{scene['scene']}_viirs.csv").open(newline="", encoding="utf-8") as f:
@@ -359,24 +370,69 @@ def score(args: argparse.Namespace) -> None:
         scene_row = {"scene": scene["scene"], "goes_time": scene["goes_time"], "daynight": scene["daynight"]}
         fdcf = np.isin(cached["fdcf"], FDCF_FIRE_CODES) & scored_area
         results.append(scene_row | {"detector": "fdcf", "threshold": ""} | score_detection(fdcf, fires, confirmed))
-        for threshold in thresholds:
+        if thresholds is None:
+            night = scene["daynight"] == "night" and model_cfg.night_threshold is not None
+            scene_thresholds = [("config", model_cfg.night_threshold if night else model_cfg.threshold)]
+        else:
+            scene_thresholds = [(threshold, threshold) for threshold in thresholds]
+        for label, threshold in scene_thresholds:
             predicted = (probabilities >= threshold) & scored_area
             results.append(
-                scene_row | {"detector": "model", "threshold": threshold} | score_detection(predicted, fires, confirmed)
+                scene_row | {"detector": "model", "threshold": label} | score_detection(predicted, fires, confirmed)
             )
             results.append(
                 scene_row
-                | {"detector": "model|fdcf", "threshold": threshold}
+                | {"detector": "model|fdcf", "threshold": label}
                 | score_detection(predicted | fdcf, fires, confirmed)
             )
         logger.info("Scored %s: %d fire pixels", scene["scene"], int(fires.sum()))
+    return results
 
+
+def score(args: argparse.Namespace) -> None:
+    results = _score_scenes(args, _load_scenes(args, args.split), args.thresholds)
+    output = args.output or args.checkpoint_dir / "scene_results.csv"
     with output.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=RESULTS_FIELDNAMES)
         writer.writeheader()
         writer.writerows(results)
     logger.info("Wrote %s", output)
     _log_summary(results)
+
+
+def _totals(rows: list[dict]) -> dict:
+    total = {k: sum(r[k] for r in rows) for k in
+             ("fire_pixels", "fire_pixels_hit", "fire_clusters", "fire_clusters_hit", "predicted_pixels",
+              "false_pixels", "false_clusters")}
+    total["fire_recall"] = total["fire_pixels_hit"] / max(1, total["fire_pixels"])
+    total["precision_tol"] = (total["predicted_pixels"] - total["false_pixels"]) / max(1, total["predicted_pixels"])
+    total["f2"] = f_beta(total["precision_tol"], total["fire_recall"], 2)
+    return total
+
+
+def calibrate(args: argparse.Namespace) -> None:
+    """Pick the day and the night threshold with the best F2 (fire pixel recall
+    weighted twice as much as precision) on the val scenes, and save them in the
+    checkpoint's model_config.json. Report test scenes afterwards with score."""
+    results = [
+        r for r in _score_scenes(args, _load_scenes(args, "val"), SCENE_THRESHOLD_CANDIDATES) if r["detector"] == "model"
+    ]
+    chosen = {}
+    print(f"\n{'scenes':>6}  {'threshold':>9}  {'fire_rec':>8}  {'prec_tol':>8}  {'f2':>6}")
+    for daynight in ("day", "night"):
+        sweep = []
+        for threshold in SCENE_THRESHOLD_CANDIDATES:
+            total = _totals([r for r in results if r["daynight"] == daynight and r["threshold"] == threshold])
+            sweep.append((total["f2"], threshold))
+            print(f"{daynight:>6}  {threshold:>9}  {total['fire_recall']:>8.4f}  {total['precision_tol']:>8.4f}  {total['f2']:>6.4f}")
+        chosen[daynight] = max(sweep)[1]
+        if chosen[daynight] == SCENE_THRESHOLD_CANDIDATES[0]:
+            logger.warning("%s: best F2 at the lowest candidate %s; a lower one may be better", daynight, chosen[daynight])
+    model_cfg = load_model_config(args.checkpoint_dir)
+    save_model_config(
+        replace(model_cfg, threshold=chosen["day"], night_threshold=chosen["night"]), args.checkpoint_dir
+    )
+    logger.info("Saved thresholds day %s, night %s in %s", chosen["day"], chosen["night"], args.checkpoint_dir)
 
 
 def _log_summary(results: list[dict]) -> None:
@@ -388,9 +444,7 @@ def _log_summary(results: list[dict]) -> None:
     print(f"\n{'detector':>16}  {'threshold':>9}  {'scenes':>6}  {'fire_rec':>8}  {'clust_rec':>9}"
           f"  {'prec_tol':>8}  {'false_px/scene':>14}  {'false_clusters/scene':>20}")
     for (detector, threshold, daynight), rows in sorted(groups.items(), key=lambda kv: (kv[0][0], str(kv[0][1]), kv[0][2])):
-        total = {k: sum(r[k] for r in rows) for k in
-                 ("fire_pixels", "fire_pixels_hit", "fire_clusters", "fire_clusters_hit", "predicted_pixels",
-                  "false_pixels", "false_clusters")}
+        total = _totals(rows)
         n = len(rows)
         print(
             f"{detector + ' ' + daynight:>16}  {threshold:>9}  {n:>6}"
@@ -404,10 +458,7 @@ def _log_summary(results: list[dict]) -> None:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     args = _parse_args()
-    if args.command == "fetch":
-        fetch(args)
-    else:
-        score(args)
+    {"fetch": fetch, "calibrate": calibrate, "score": score}[args.command](args)
 
 
 if __name__ == "__main__":
