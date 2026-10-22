@@ -9,7 +9,8 @@ Example:
     python -m model.scripts.evaluate_model --checkpoint-dir model/checkpoints/c32 --max-shift 0
 
 f1_tol allows a 1-pixel (2 km) offset between prediction and fire (see
-metrics.tolerant_counts).
+metrics.tolerant_counts). fire_rec is the share of fires detected and false_al the
+share of fire-free patches with any prediction (metrics.fire_counts).
 """
 
 import argparse
@@ -21,7 +22,7 @@ from torch.utils.data import DataLoader
 
 from model.training.config import THRESHOLD_CANDIDATES, default_config, load_model_config
 from model.training.dataset import FirePatchDataset
-from model.training.losses import BCEDiceLoss
+from model.training.losses import BCETverskyLoss
 from model.training.model import TinyUNet
 from model.training.normalization import load_band_stats
 from model.training.train import evaluate_thresholds
@@ -52,7 +53,9 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     args = _parse_args()
     cfg = default_config(checkpoint_dir=args.checkpoint_dir)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    )
 
     # Each checkpoint is normalized with the stats of its own training run.
     band_stats = load_band_stats(cfg.checkpoint_dir / "norm_stats.json")
@@ -77,14 +80,18 @@ def main() -> None:
     model_cfg = load_model_config(cfg.checkpoint_dir)
     model = TinyUNet(in_channels=16, base_channels=model_cfg.base_channels, depth=model_cfg.depth).to(device)
     model.load_state_dict(torch.load(cfg.checkpoint_dir / "model_best.pt", map_location=device))
-    loss_fn = BCEDiceLoss(dice_weight=cfg.dice_weight)
+    loss_fn = BCETverskyLoss(tversky_weight=cfg.tversky_weight, fn_weight=cfg.fn_weight)
     logger.info("Scoring %s on %d %s samples (%s)", cfg.checkpoint_dir, len(dataset), args.split, device)
 
-    print(f"\n{'threshold':>9}  {'precision':>9}  {'recall':>6}  {'f1':>6}  {'iou':>6}  {'f1_tol':>6}")
+    print(
+        f"\n{'threshold':>9}  {'precision':>9}  {'recall':>6}  {'f1':>6}  {'iou':>6}  {'f1_tol':>6}"
+        f"  {'fire_rec':>8}  {'false_al':>8}  {'f2':>6}"
+    )
     for m in evaluate_thresholds(model, loader, loss_fn, device, args.thresholds):
         print(
             f"{m['threshold']:>9.2f}  {m['precision']:>9.4f}  {m['recall']:>6.4f}  {m['f1']:>6.4f}"
-            f"  {m['iou']:>6.4f}  {m['f1_tol']:>6.4f}"
+            f"  {m['iou']:>6.4f}  {m['f1_tol']:>6.4f}  {m['fire_recall']:>8.4f}  {m['false_alarm_rate']:>8.4f}"
+            f"  {m['f2']:>6.4f}"
         )
 
 

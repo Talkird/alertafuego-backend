@@ -5,7 +5,8 @@ Example:
     python -m model.scripts.train_model --batch-size 256 --num-workers 6   # on a GPU
     python -m model.scripts.train_model --base-channels 32 --checkpoint-dir model/checkpoints/c32
 
-After training, the threshold with the best val F1 is saved with the checkpoint
+After training, the highest threshold whose val fire recall reaches the recall target
+(default 0.95; the lowest-threshold run otherwise) is saved with the checkpoint
 (model_config.json, read by inference) and test is scored once at it. results.json
 sums up the run.
 """
@@ -20,9 +21,9 @@ import torch
 from torch import optim
 from torch.utils.data import DataLoader
 
-from model.training.config import THRESHOLD_CANDIDATES, ModelConfig, default_config, save_model_config
+from model.training.config import THRESHOLD_CANDIDATES, ModelConfig, default_config, pick_threshold, save_model_config
 from model.training.dataset import FirePatchDataset, list_split_files
-from model.training.losses import BCEDiceLoss
+from model.training.losses import BCETverskyLoss
 from model.training.model import TinyUNet
 from model.training.normalization import compute_band_stats, save_band_stats
 from model.training.train import evaluate, evaluate_thresholds, fit, plot_training_curves
@@ -46,6 +47,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-shift", type=int, default=None, help="Max pixels patches are shifted off-center (default 8; 0: none)."
     )
+    parser.add_argument(
+        "--fn-weight", type=float, default=None, help="Tversky weight of a missed fire pixel (default 0.7; 0.5: Dice)."
+    )
+    parser.add_argument(
+        "--recall-target", type=float, default=None, help="Val fire recall the threshold must reach (default 0.95)."
+    )
     parser.add_argument("--limit", type=int, default=None, help="Cap samples per split, for smoke tests.")
     return parser.parse_args()
 
@@ -65,13 +72,17 @@ def main() -> None:
             "base_channels": args.base_channels,
             "depth": args.depth,
             "max_shift": args.max_shift,
+            "fn_weight": args.fn_weight,
+            "recall_target": args.recall_target,
         }.items()
         if value is not None
     }
     cfg = replace(default_config(checkpoint_dir=args.checkpoint_dir), **overrides)
 
     manifest_path = args.dataset_dir / "manifest.csv"
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+    )
     logger.info("Training on device: %s", device)
 
     train_files = list_split_files(manifest_path, args.dataset_dir, "train", limit=args.limit, seed=cfg.seed)
@@ -114,7 +125,7 @@ def main() -> None:
 
     model = TinyUNet(in_channels=16, base_channels=cfg.base_channels, depth=cfg.depth).to(device)
     logger.info("Model parameters: %d", sum(p.numel() for p in model.parameters()))
-    loss_fn = BCEDiceLoss(dice_weight=cfg.dice_weight)
+    loss_fn = BCETverskyLoss(tversky_weight=cfg.tversky_weight, fn_weight=cfg.fn_weight)
     optimizer = optim.Adam(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
 
     best_model_path = fit(model, train_loader, val_loader, cfg, optimizer, loss_fn, device)
@@ -124,9 +135,12 @@ def main() -> None:
     # The threshold is picked on val; test is scored once, at it - choosing it on
     # test would overstate the result.
     val_sweep = evaluate_thresholds(model, val_loader, loss_fn, device, THRESHOLD_CANDIDATES)
-    best = max(val_sweep, key=lambda m: m["f1"])
+    best = pick_threshold(val_sweep, cfg.recall_target)
     threshold = best["threshold"]
-    logger.info("Best val threshold %.2f: f1=%.4f f1_tol=%.4f", threshold, best["f1"], best["f1_tol"])
+    logger.info(
+        "Val threshold %.3f: fire_recall=%.4f (target %.2f) precision_tol=%.4f f1_tol=%.4f",
+        threshold, best["fire_recall"], cfg.recall_target, best["precision_tol"], best["f1_tol"],
+    )
     save_model_config(ModelConfig(cfg.base_channels, cfg.depth, threshold), cfg.checkpoint_dir)
 
     test_metrics = evaluate(model, test_loader, loss_fn, device, threshold)

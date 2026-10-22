@@ -294,3 +294,23 @@
 - Measure real run durations in `detection_runs` for a day; if runs are short (~1 minute), go to every 10 minutes (`detection_schedule`).
 - Half the GOES-19 images are skipped; a fire visible in only one 10-minute image can be missed.
 
+### [2026-10-22] — Train and pick the threshold for fire recall (target 95%), not F1
+
+**Context:** Recall is the thesis's primary metric (target >95%): a missed fire is worse than a false alarm, and precision is the accepted trade-off. Training picked the checkpoint and threshold by strict pixel F1, and no metric measured whether each fire was found. Measured on val for the production `b-shift` checkpoint: fire recall (share of VIIRS fires, one per positive sample, with a prediction within 1 pixel) is 76.7% at threshold 0.65 (tolerant pixel precision 92.1%), 81.8% at the deployed 0.08 and 84.0% at 0.02. Lowering the threshold alone can't reach 95%.
+**Decision:**
+- New metrics: `fire_recall` and `false_alarm_rate` (fire-free patches with any prediction) per sample (`metrics.fire_counts`), and F2 of tolerant precision and fire recall.
+- Loss: Dice replaced by Tversky with false negatives weighted 0.7 and false positives 0.3 (`--fn-weight`; 0.5 is Dice). BCE stays.
+- Checkpoint: the epoch with the best val F2 over all threshold candidates (was F1 at a fixed 0.5).
+- Threshold: the highest candidate whose val fire recall reaches `--recall-target` (default 0.95), else the one with the highest fire recall. Candidates now go down to 0.005.
+- Training and evaluation use Apple MPS when there is no CUDA.
+**Alternatives considered:**
+- Only lowering the threshold on the current model: tops out at ~84%.
+- Strict pixel recall as the target: GOES's 2 km pixels can't place VIIRS's 375 m fires exactly, so it understates what an alert needs.
+- BCE `pos_weight` or focal loss instead of Tversky.
+- Picking the checkpoint by fire recall alone: an epoch that predicts fire everywhere would win.
+**Rationale:** Fire recall measures what an alert misses. Tversky penalizes misses directly. F2 favors recall without rewarding degenerate predictions. The threshold rule spends precision only as far as the target needs.
+**Consequences:**
+- The new model must be trained (~1.5 h on the desktop GPU) and compared with `b-shift` on fire recall. 95% isn't guaranteed: some VIIRS fires are likely too small or brief for GOES-19 to see at all.
+- If no threshold reaches the target, the lowest-threshold result is saved, which can mean many false alarms. Check `false_alarm_rate` in `results.json` before deploying.
+- More false alarms in production. Scheduled detection is already disabled over daytime false positives, so a lower threshold makes that worse.
+- `metrics.csv` gains `val_threshold`, `val_fire_recall` and `val_f2`; old checkpoints' files keep the old columns.

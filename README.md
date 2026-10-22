@@ -101,18 +101,25 @@ Usa el manifest combinado (`model/dataset/manifest.csv`, ver `merge_datasets`
 arriba). Args útiles: `--dataset-dir`, `--checkpoint-dir` (default `model/checkpoints`),
 `--batch-size`, `--lr`, `--num-workers`, `--base-channels`/`--depth` (tamaño del modelo),
 `--max-shift` (default 8: desplaza los parches para que el foco no quede siempre en el
-centro; 0 lo apaga), `--limit` (subset chico para smoke test). Corre en GPU si hay CUDA
-disponible (con precisión mixta), si no cae a CPU automáticamente. El learning rate baja
+centro; 0 lo apaga), `--fn-weight` (default 0.7: peso Tversky de un píxel de fuego
+perdido frente a una falsa alarma; 0.5 es Dice), `--recall-target` (default 0.95),
+`--limit` (subset chico para smoke test). Corre en GPU si hay CUDA disponible (con
+precisión mixta) o MPS (Apple), si no cae a CPU automáticamente. El learning rate baja
 con un schedule coseno a lo largo de las épocas.
 
-Al terminar elige el umbral con mejor F1 en val, evalúa test una sola vez con ese
+La métrica prioritaria es el **recall por foco** (`fire_recall`): la fracción de focos
+VIIRS (una muestra positiva = un foco) con al menos una predicción a 1 píxel o menos.
+Perder un foco es peor que una falsa alarma. Cada época se guarda el checkpoint con mejor
+F2 en val (precisión tolerante y recall por foco, con el recall pesando el doble). Al
+terminar elige el umbral más alto cuyo recall por foco en val alcanza `--recall-target`
+(si ninguno lo alcanza, el de mayor recall), evalúa test una sola vez con ese
 umbral (desplazado y centrado) y guarda en `checkpoint_dir`: `model_best.pt`,
 `norm_stats.json`, `model_config.json` (tamaño del modelo y umbral, lo lee la
 inferencia), `results.json` (resumen de la corrida), `metrics.csv` y
 `training_curves.png`. Las métricas incluyen `f1_tol`: el F1 aceptando un píxel (2 km)
 de diferencia entre la predicción y el foco, el error típico de geolocalización
-GOES-VIIRS. `python -m model.scripts.evaluate_model` re-evalúa un checkpoint en varios
-umbrales.
+GOES-VIIRS, y `false_alarm_rate`: la fracción de parches sin fuego con alguna predicción.
+`python -m model.scripts.evaluate_model` re-evalúa un checkpoint en varios umbrales.
 
 Para desplegar un modelo, subir los tres archivos al bucket de artefactos (ver
 `terraform/README.md`).
