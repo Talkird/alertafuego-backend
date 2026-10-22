@@ -91,6 +91,12 @@ python -m model.scripts.merge_datasets
 Escribe `model/dataset/manifest.csv` con todas las muestras de `model/dataset/*/`
 (sin copiar archivos). Cada mes conserva su propio split train/val/test.
 
+Con `--holdout-months 2025-07 2026-01` escribe además `model/dataset/manifest_holdout.csv`,
+donde esos meses completos son test (los días de test del resto pasan a val; train no
+cambia salvo por los meses retirados). Días vecinos comparten focos, así que un test por
+días da números optimistas; un mes retirado no. Se usa con `--manifest manifest_holdout.csv`
+en `train_model` y `evaluate_model`.
+
 ## Entrenamiento (fase 2)
 
 ```
@@ -119,7 +125,28 @@ inferencia), `results.json` (resumen de la corrida), `metrics.csv` y
 `training_curves.png`. Las métricas incluyen `f1_tol`: el F1 aceptando un píxel (2 km)
 de diferencia entre la predicción y el foco, el error típico de geolocalización
 GOES-VIIRS, y `false_alarm_rate`: la fracción de parches sin fuego con alguna predicción.
-`python -m model.scripts.evaluate_model` re-evalúa un checkpoint en varios umbrales.
+`python -m model.scripts.evaluate_model` re-evalúa un checkpoint en varios umbrales;
+con `--by-stratum` separa por hora UTC y día/noche (los focos solo existen en las horas
+de paso de VIIRS). `results.json` incluye test por estrato (`test_by_stratum`).
+
+### Evaluación sobre escenas completas
+
+Las métricas por parche no reflejan producción: miran parches de 32x32 centrados cerca de
+un foco. `evaluate_scenes` corre el modelo sobre toda Argentina, con el mismo tileado
+que la inferencia, en ~30 imágenes GOES-19 de días de val/test a la hora de un paso de
+VIIRS:
+
+```
+python -m model.scripts.evaluate_scenes fetch    # una vez, ~1 h de Earth Engine, ~600 MB
+python -m model.scripts.evaluate_scenes score --checkpoint-dir model/checkpoints/b-shift
+```
+
+`fetch` guarda en `model/scene_eval/` (ignorado por git) cada escena, la máscara FDCF de
+NOAA y todas las detecciones VIIRS a ±12 h; si se corta, se vuelve a correr y sigue.
+`score` es offline y escribe `scene_results.csv` en el checkpoint: recall de píxeles y de
+focos (grupos de píxeles vecinos) frente a VIIRS del mismo paso, y falsas detecciones
+(predicciones sin ninguna detección VIIRS a 1 píxel y 12 h; cota superior, porque VIIRS
+no ve bajo nubes).
 
 Para desplegar un modelo, subir los tres archivos al bucket de artefactos (ver
 `terraform/README.md`).

@@ -41,9 +41,9 @@ import shapely
 import torch
 from shapely.geometry import shape
 
-from model.data_pipeline.config import GOES_COLLECTION_ID, default_config as default_pipeline_config
+from model.data_pipeline.config import GOES_COLLECTION_ID, VIIRS_COLLECTION_IDS, BBox
 from model.data_pipeline.ee_client import init_earth_engine
-from model.data_pipeline.matching import fetch_viirs_detections
+from model.data_pipeline.matching import MAX_VIIRS_FEATURES_PER_QUERY, _fire_points_for_image
 from model.data_pipeline.negative_sampling import load_argentina_land_geometry
 from model.data_pipeline.patches import target_projection
 from model.inference.config import default_config as default_inference_config
@@ -60,6 +60,9 @@ FDCF_COLLECTION_ID = "NOAA/GOES/19/FDCF"
 OVERPASS_WINDOW = timedelta(minutes=15)
 #: A prediction with any VIIRS detection this close in time isn't counted as false.
 CONFIRM_WINDOW = timedelta(hours=12)
+#: VIIRS is queried in slices this long, filtered by acquisition time on the server,
+#: so each query holds about one overpass per satellite and stays under the feature cap.
+VIIRS_SLICE = timedelta(hours=3)
 SCENES_FILENAME = "scenes.csv"
 POLYGON_FILENAME = "argentina.geojson"
 RESULTS_FIELDNAMES = [
@@ -137,6 +140,60 @@ def _fetch_fdcf_mask(when: datetime, bbox, chunk_size_px: int) -> np.ndarray:
     return assemble_raster(chunks, bbox)[0].astype(np.int16)
 
 
+def _viirs_features(collection_id: str, bbox: BBox, start: datetime, end: datetime, depth: int = 0) -> list[dict]:
+    """VIIRS fire points of one collection in bbox acquired in [start, end), filtered
+    by acquisition time on the server. A query that hits the feature cap is split
+    into four quarters of bbox, down to 3 levels (1/64 of the area)."""
+    region = ee.Geometry.BBox(bbox.west, bbox.south, bbox.east, bbox.north)
+    # Daily images: a detection sits in its own UTC day's image, give or take one.
+    day = start.replace(hour=0, minute=0, second=0, microsecond=0)
+    images = ee.ImageCollection(collection_id).filterDate(
+        (day - timedelta(days=1)).isoformat(), (end + timedelta(days=1)).isoformat()
+    ).filterBounds(region)
+    points = ee.FeatureCollection(
+        images.toList(images.size()).map(lambda img: _fire_points_for_image(ee.Image(img), region, 0))
+    ).flatten()
+    points = points.filter(ee.Filter.rangeContains("acq_epoch", start.timestamp(), end.timestamp() - 1e-3))
+    features = points.limit(MAX_VIIRS_FEATURES_PER_QUERY).getInfo()["features"]
+    if len(features) < MAX_VIIRS_FEATURES_PER_QUERY:
+        return features
+    if depth == 3:
+        logger.warning("%s hit the feature cap for %s, %s..%s; some detections are missing", collection_id, bbox, start, end)
+        return features
+    mid_lon, mid_lat = (bbox.west + bbox.east) / 2, (bbox.south + bbox.north) / 2
+    # Half-open quarters would need exclusive edges; points exactly on a split line
+    # may appear twice, which only duplicates a mask pixel.
+    quarters = [
+        BBox(west=w, south=s, east=e, north=n)
+        for w, e in ((bbox.west, mid_lon), (mid_lon, bbox.east))
+        for s, n in ((bbox.south, mid_lat), (mid_lat, bbox.north))
+    ]
+    return [f for q in quarters for f in _viirs_features(collection_id, q, start, end, depth + 1)]
+
+
+def _fetch_viirs(bbox: BBox, start: datetime, end: datetime) -> list[dict]:
+    """Every VIIRS detection (any confidence) acquired in [start, end), queried in
+    VIIRS_SLICE steps. matching.fetch_viirs_detections caps whole days instead, which
+    on busy days drops detections in collection order."""
+    rows = []
+    slice_start = start
+    while slice_start < end:
+        slice_end = min(end, slice_start + VIIRS_SLICE)
+        for collection_id in VIIRS_COLLECTION_IDS:
+            for feature in _viirs_features(collection_id, bbox, slice_start, slice_end):
+                lon, lat = feature["geometry"]["coordinates"]
+                props = feature["properties"]
+                rows.append({
+                    "lat": lat,
+                    "lon": lon,
+                    "timestamp": datetime.fromtimestamp(props["acq_epoch"], tz=timezone.utc).isoformat(),
+                    "confidence": int(props["confidence"]),
+                    "frp": float(props.get("frp", 0.0)),
+                })
+        slice_start = slice_end
+    return rows
+
+
 def fetch(args: argparse.Namespace) -> None:
     init_earth_engine()
     ee.data.setDeadline(2 * 60 * 1000)  # see export_dataset: a hung request otherwise waits forever
@@ -159,28 +216,25 @@ def fetch(args: argparse.Namespace) -> None:
         polygon_path.write_text(json.dumps(load_argentina_land_geometry(bbox).getInfo()))
 
     for i, scene in enumerate(scenes, 1):
-        raster_path = args.cache_dir / f"{scene['scene']}.npz"
-        if raster_path.exists():
-            continue
         when = datetime.fromisoformat(scene["goes_time"])
-        logger.info("Scene %d/%d: %s", i, len(scenes), scene["scene"])
+        # Each file is written whole once fetched, so an interrupted scene resumes
+        # with whatever it is missing.
+        raster_path = args.cache_dir / f"{scene['scene']}.npz"
+        if not raster_path.exists():
+            logger.info("Scene %d/%d: %s, raster and FDCF", i, len(scenes), scene["scene"])
+            goes_image = _image_at(GOES_COLLECTION_ID, when, timedelta(minutes=1))
+            raster = assemble_raster(fetch_calibrated_chunks(goes_image, bbox, cfg.chunk_size_px), bbox)
+            fdcf = _fetch_fdcf_mask(when, bbox, cfg.chunk_size_px)
+            np.savez_compressed(raster_path, raster=raster, fdcf=fdcf)
 
-        goes_image = _image_at(GOES_COLLECTION_ID, when, timedelta(minutes=1))
-        raster = assemble_raster(fetch_calibrated_chunks(goes_image, bbox, cfg.chunk_size_px), bbox)
-        fdcf = _fetch_fdcf_mask(when, bbox, cfg.chunk_size_px)
-
-        # VIIRS collections are daily images: query whole days, keep +-12 h.
-        start = (when - CONFIRM_WINDOW).replace(hour=0, minute=0, second=0, microsecond=0)
-        detections = fetch_viirs_detections(bbox, start, when + CONFIRM_WINDOW + timedelta(days=1), min_confidence=0)
-        with (args.cache_dir / f"{scene['scene']}_viirs.csv").open("w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["lat", "lon", "timestamp", "confidence", "frp"])
-            for d in detections:
-                if abs(d.timestamp - when) <= CONFIRM_WINDOW:
-                    writer.writerow([d.lat, d.lon, d.timestamp.isoformat(), d.confidence, d.frp])
-
-        # Written last, so a scene interrupted mid-fetch is fetched again.
-        np.savez_compressed(raster_path, raster=raster, fdcf=fdcf)
+        viirs_path = args.cache_dir / f"{scene['scene']}_viirs.csv"
+        if not viirs_path.exists():
+            logger.info("Scene %d/%d: %s, VIIRS", i, len(scenes), scene["scene"])
+            rows = _fetch_viirs(bbox, when - CONFIRM_WINDOW, when + CONFIRM_WINDOW)
+            with viirs_path.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=["lat", "lon", "timestamp", "confidence", "frp"])
+                writer.writeheader()
+                writer.writerows(rows)
 
 
 def _dilate(mask: np.ndarray) -> np.ndarray:

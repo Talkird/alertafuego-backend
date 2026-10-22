@@ -314,3 +314,40 @@
 - If no threshold reaches the target, the lowest-threshold result is saved, which can mean many false alarms. Check `false_alarm_rate` in `results.json` before deploying.
 - More false alarms in production. Scheduled detection is already disabled over daytime false positives, so a lower threshold makes that worse.
 - `metrics.csv` gains `val_threshold`, `val_fire_recall` and `val_f2`; old checkpoints' files keep the old columns.
+
+### [2026-10-22] — Measure on full scenes: production finds ~10% of VIIRS fires; patch metrics hid a shift leak
+
+**Context:** Every metric so far came from 32x32 patches centered within 8 pixels of a VIIRS fire, or on random fire-free land. Production runs the model over all of Argentina in non-overlapping 32x32 tiles. Stage 1 of the recall plan (`tesis/docs/plan-recall-no-export.md`) measures the production setting.
+**Decision:**
+- `model/scripts/evaluate_scenes.py`: `fetch` caches 30 full Argentina scenes from Earth Engine once (`model/scene_eval/`, gitignored, ~800 MB), at GOES-19 images matched to VIIRS overpasses on val/test days, one day and one night per month plus 6 random (17 day, 13 night). Each scene stores the 16-band raster from the production fetch code, NOAA's FDCF Mask on the same grid, and every VIIRS detection within ±12 h. `score` runs offline with the production tiling.
+- Scene scoring inside Argentina's polygon. Fire pixels are VIIRS detections (confidence ≥ nominal) within 15 min of the image. `fire_recall`: fire pixels with a prediction within 1 pixel. `cluster_recall`: groups of adjacent fire pixels with any of them found. A false detection is a prediction with no VIIRS detection of any confidence within 1 pixel and 12 h. That is an upper bound, since VIIRS misses fires under clouds.
+- VIIRS is queried in 3-hour slices, filtered by acquisition time on the server, and split into quarters when a query hits Earth Engine's 4,000-feature cap. `matching.fetch_viirs_detections` caps whole days in collection order: on 2025-09-25 it returned 6,128 of 17,908 detections.
+- `evaluate_model --by-stratum` and `results.json`'s `test_by_stratum` score per UTC hour and day/night (sun above the horizon at the sample).
+- `merge_datasets --holdout-months 2025-07 2026-01` writes `manifest_holdout.csv`: those two months (winter, summer) are the whole test set; the other months' test days join val; nothing moves into train (train 94,349 / val 26,400 / test 24,798). Used with `--manifest` in train_model and evaluate_model.
+**Results (b-shift, the production model):**
+
+Full scenes, 30 scenes (day 17, night 13):
+
+| Threshold | Fire pixel recall | Cluster recall | Precision (VIIRS ±12 h) | False pixels / scene | False clusters / scene |
+|---|---|---|---|---|---|
+| 0.02 | 13.2% (day 15.1, night 7.5) | 9.2% | 12.0% | 130 | 83 |
+| 0.08 (deployed) | 9.9% (day 11.1, night 6.2) | 6.7% | 11.6% | 92 | 63 |
+| 0.65 | 5.6% (day 6.3, night 3.7) | 3.4% | 11.5% | 37 | 32 |
+
+a-baseline (trained without shifts) is about the same: 8.0% fire pixel recall and 56 false clusters per scene at 0.08.
+
+Recall by the fire pixel's distance to the nearest tile edge (0.08): 2% on the edge, 8-21% from 3 to 13 pixels in, 62% at 14 and 95% at the center (15). The center rings hold only 21 and 76 fire pixels.
+
+Recall by VIIRS fire strength (FRP summed per GOES pixel), b-shift at 0.08 vs NOAA's FDCF (codes 10-15, 30-35): 0-5 MW 2.0% vs 1.4%; 5-10 MW 2.3% vs 4.3%; 10-20 MW 3.9% vs 8.1%; 20-50 MW 8.3% vs 16.9%; 50-100 MW 17.8% vs 33.9%; over 100 MW 46.2% vs 75.5%.
+
+Patches, test, threshold 0.08, by hour: fire-free patches with any prediction 9.3-13.0% at 15-17 UTC (12-14 local) vs 0.6-4.5% at other hours. Fire recall day 86.3%, night 75.9%.
+**Findings:**
+- **Shift leak.** `dataset.shift` fills the uncovered border with zeros, so the border's width tells the model where the fire is. On val fire patches, b-shift finds 83.5% of fires shifted with a zero border, as in training, and 19.3% when the same shift wraps real pixels around instead. The model relies on "fire at the patch center", which production tiles don't provide. It explains the tile-center pattern above and false positives clustering at tile centers. Every patch metric so far overstates production, including the 77-84% fire recall that motivated `feat/recall-first`.
+- **GOES-19 can't see most VIIRS fires.** Even NOAA's operational product finds 1-8% of fire pixels under 20 MW and 75% over 100 MW. 95% recall against all VIIRS fires is out of reach for any GOES-based detector. A reachable target needs a fire-strength floor (e.g. "fires over 100 MW").
+- Overlapping tiles (stride 16, keeping each tile's central 16x16) didn't help b-shift on two scenes (recall 0-10%, about 4x the false detections), so the fix belongs in training, not tiling.
+**Alternatives considered:** Keep patch metrics as the headline (they don't reflect production); score against VIIRS over the whole bbox without the ±12 h confirmation (counts fires from other overpasses as false).
+**Consequences:**
+- Full-scene metrics are the headline from now on; patch metrics only compare training runs.
+- Stage 3 has to remove the shift leak (augment without a zero border) before any other training change is worth measuring.
+- Report recall per fire-strength band, and set the thesis target on fires GOES can physically see.
+- The 30-scene set is fixed (`scenes.csv`, seed 0) so later models are scored on the same scenes.
