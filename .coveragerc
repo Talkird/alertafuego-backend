@@ -1,0 +1,4 @@
+[run]
+source = backend, model
+omit =
+    backend/alembic/*

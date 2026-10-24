@@ -246,6 +246,22 @@ modelo. Activarla y correrla a mano: `terraform/README.md`, paso 7.
 Docs interactivas en `/docs`. Ver esquema de la tabla `detections` y por qué se
 modeló así en `docs/DECISIONS.md` (entradas de persistencia, fase 4).
 
+## Tests
+
+```
+pip install -r requirements-dev.txt
+pytest --cov
+```
+
+`tests/unit/` cubre la lógica del modelo y del backend sin red (Earth Engine
+mockeado). `tests/api/` prueba cada endpoint con `TestClient` contra una base PostGIS
+de prueba, que los tests migran con Alembic y vacían después de cada caso:
+`TEST_DATABASE_URL` (por defecto
+`postgresql+psycopg://postgres:postgres@localhost:5432/alertafuego_test`; la base
+tiene que existir). Los tests nunca usan el `DATABASE_URL` del `.env`, ni SES,
+Telegram o Supabase reales. En CI corren en cada PR (`.github/workflows/tests.yml`).
+Resultados y decisiones: `docs/PRUEBAS.md` en la raíz del workspace `tesis/`.
+
 ## Limitaciones conocidas
 
 - Dataset de entrenamiento cubre un solo mes (septiembre 2025) — el modelo tiene señal
