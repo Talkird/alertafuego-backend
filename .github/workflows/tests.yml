@@ -7,8 +7,6 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch: {}
-  push:
-    branches: [test/validacion]  # TEMP: verify the workflow before the PR
 
 permissions:
   contents: read
