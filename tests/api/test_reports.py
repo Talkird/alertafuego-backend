@@ -3,9 +3,12 @@ including authentication."""
 
 import uuid
 from datetime import timedelta
+from types import SimpleNamespace
 
+import jwt
 import pytest
 
+from backend.app import auth
 from tests.conftest import bearer, make_token
 
 pytestmark = pytest.mark.db
@@ -123,3 +126,15 @@ def test_edit_report_errors(client, add_detection, user_id):
     assert client.patch(url, json={"comment": "x"}, headers=bearer(user_id)).status_code == 404
     client.post(url, json={"verdict": "confirmed_fire"}, headers=bearer(user_id))
     assert client.patch(url, json={}, headers=bearer(user_id)).status_code == 400
+
+
+def test_auth_server_down_is_503_not_401(client, add_detection, user_id, monkeypatch):
+    """A Supabase outage must not log every user out (a 401 would)."""
+    def unreachable(token):
+        raise jwt.PyJWKClientConnectionError("connection refused")
+
+    client_stub = SimpleNamespace(get_signing_key_from_jwt=unreachable)
+    monkeypatch.setattr(auth, "_get_jwks_client", lambda: client_stub)
+    detection = add_detection()
+    response = client.post(f"/detections/{detection.id}/reports", json=FALSE_POSITIVE, headers=bearer(user_id))
+    assert response.status_code == 503
