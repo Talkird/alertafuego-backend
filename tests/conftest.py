@@ -24,6 +24,7 @@ os.environ["SUPABASE_URL"] = "http://supabase.test"
 os.environ["DETECT_API_KEY"] = "test-detect-key"
 os.environ["DETECTION_WORKER"] = "1"  # mounts the scheduled-detection route too
 os.environ["FRONTEND_URL"] = "http://frontend.test"
+os.environ["FRONTEND_ORIGINS"] = "http://localhost:3000"
 for name in (
     "ALERT_EMAIL_FROM",
     "TELEGRAM_BOT_TOKEN",
