@@ -47,6 +47,29 @@ def is_day(lat, lon, when: datetime):
     return solar_zenith_deg(lat, lon, when) < 90
 
 
+def hour_balance_weights(manifest_path: Path, dataset_dir: Path, files: list[Path], max_weight: float = 10.0) -> list[float]:
+    """Sampling weights, in the order of files, that give fire and fire-free samples
+    the same total weight within each UTC hour, keeping each hour's total. At 17-18
+    UTC ~92% of the samples are fire, so without this the time of day alone predicts
+    fire. Hours with only one kind keep weight 1 (nothing to balance), and no sample
+    weighs more than max_weight, so a handful of fires at an edge hour (07, 20 UTC)
+    aren't repeated dozens of times."""
+    with manifest_path.open(newline="", encoding="utf-8") as f:
+        rows = {dataset_dir / row["filename"]: row for row in csv.DictReader(f)}
+    keys = [(datetime.fromisoformat(rows[p]["goes_time"]).hour, rows[p]["has_fire"] == "True") for p in files]
+    counts: dict[tuple[int, bool], int] = {}
+    for key in keys:
+        counts[key] = counts.get(key, 0) + 1
+    weights = []
+    for hour, has_fire in keys:
+        n_fire, n_free = counts.get((hour, True), 0), counts.get((hour, False), 0)
+        if not n_fire or not n_free:
+            weights.append(1.0)
+        else:
+            weights.append(min(max_weight, (n_fire + n_free) / (2 * (n_fire if has_fire else n_free))))
+    return weights
+
+
 def sample_strata(manifest_path: Path, dataset_dir: Path, files: list[Path]) -> list[tuple[str, str]]:
     """(UTC hour "HH", "day" or "night") for each file, in the order given."""
     with manifest_path.open(newline="", encoding="utf-8") as f:

@@ -19,14 +19,14 @@ from pathlib import Path
 
 import torch
 from torch import optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from model.training.config import THRESHOLD_CANDIDATES, ModelConfig, default_config, pick_threshold, save_model_config
 from model.training.dataset import FirePatchDataset, list_split_files
 from model.training.losses import BCETverskyLoss
 from model.training.model import TinyUNet
 from model.training.normalization import compute_band_stats, save_band_stats
-from model.training.strata import sample_strata
+from model.training.strata import hour_balance_weights, sample_strata
 from model.training.train import evaluate, evaluate_by_stratum, evaluate_thresholds, fit, plot_training_curves
 
 logger = logging.getLogger(__name__)
@@ -50,6 +50,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--depth", type=int, default=None, help="Downsampling stages (default 3).")
     parser.add_argument(
         "--max-shift", type=int, default=None, help="Max pixels patches are shifted off-center (default 8; 0: none)."
+    )
+    parser.add_argument("--crop-size", type=int, default=None, help="Patch side the model trains on (default 32).")
+    parser.add_argument(
+        "--random-crop",
+        action="store_true",
+        help="Crop at a random position in the stored patch instead of shifting (use with --max-shift 0).",
+    )
+    parser.add_argument(
+        "--balance-hours", action="store_true", help="Sample fire and fire-free train patches evenly within each UTC hour."
     )
     parser.add_argument(
         "--fn-weight", type=float, default=None, help="Tversky weight of a missed fire pixel (default 0.7; 0.5: Dice)."
@@ -76,6 +85,9 @@ def main() -> None:
             "base_channels": args.base_channels,
             "depth": args.depth,
             "max_shift": args.max_shift,
+            "crop_size": args.crop_size,
+            "random_crop": args.random_crop or None,
+            "balance_hours": args.balance_hours or None,
             "fn_weight": args.fn_weight,
             "recall_target": args.recall_target,
         }.items()
@@ -93,7 +105,7 @@ def main() -> None:
     band_stats = compute_band_stats(train_files)
     save_band_stats(band_stats, cfg.checkpoint_dir / "norm_stats.json")
 
-    def dataset(split: str, augment: bool, max_shift: int) -> FirePatchDataset:
+    def dataset(split: str, augment: bool, max_shift: int, random_crop: bool = cfg.random_crop) -> FirePatchDataset:
         return FirePatchDataset(
             manifest_path,
             args.dataset_dir,
@@ -104,15 +116,16 @@ def main() -> None:
             limit=args.limit,
             seed=cfg.seed,
             max_shift=max_shift,
+            random_crop=random_crop,
         )
 
-    # Val and test are shifted too (fixed per sample), so scores reflect fires
-    # anywhere in a tile, as at inference. Centered test: comparable with runs
-    # trained before shifting existed.
+    # Val and test are shifted (or randomly cropped) too, fixed per sample, so scores
+    # reflect fires anywhere in a tile, as at inference. Centered test: comparable
+    # with runs trained before shifting existed.
     train_ds = dataset("train", augment=True, max_shift=cfg.max_shift)
     val_ds = dataset("val", augment=False, max_shift=cfg.max_shift)
     test_ds = dataset("test", augment=False, max_shift=cfg.max_shift)
-    test_centered_ds = dataset("test", augment=False, max_shift=0)
+    test_centered_ds = dataset("test", augment=False, max_shift=0, random_crop=False)
     logger.info("Samples - train: %d, val: %d, test: %d", len(train_ds), len(val_ds), len(test_ds))
 
     # Workers are kept between epochs: on Windows each one starts a new Python process.
@@ -122,7 +135,14 @@ def main() -> None:
         "persistent_workers": cfg.num_workers > 0,
         "pin_memory": device.type == "cuda",
     }
-    train_loader = DataLoader(train_ds, shuffle=True, **loader_kwargs)
+    if cfg.balance_hours:
+        weights = hour_balance_weights(manifest_path, args.dataset_dir, train_ds.files)
+        sampler = WeightedRandomSampler(
+            weights, len(weights), replacement=True, generator=torch.Generator().manual_seed(cfg.seed)
+        )
+        train_loader = DataLoader(train_ds, sampler=sampler, **loader_kwargs)
+    else:
+        train_loader = DataLoader(train_ds, shuffle=True, **loader_kwargs)
     val_loader = DataLoader(val_ds, shuffle=False, **loader_kwargs)
     test_loader = DataLoader(test_ds, shuffle=False, **loader_kwargs)
     test_centered_loader = DataLoader(test_centered_ds, shuffle=False, **loader_kwargs)

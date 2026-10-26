@@ -74,15 +74,21 @@ class FirePatchDataset(Dataset):
         limit: int | None = None,
         seed: int = 0,
         max_shift: int = 0,
+        random_crop: bool = False,
     ) -> None:
         """augment: random flips/rotations and a random shift of up to max_shift
         pixels (train). Without it, max_shift still applies, as a fixed shift per
-        sample, so val/test scores are repeatable."""
+        sample, so val/test scores are repeatable.
+
+        random_crop: crop at a random position inside the stored patch instead of its
+        center (train: random, val/test: fixed per sample, like max_shift). Unlike a
+        shift it adds no filled border, which told the model where the fire was."""
         self.dataset_dir = dataset_dir
         self.band_stats = band_stats
         self.crop_size = crop_size
         self.augment = augment
         self.max_shift = max_shift
+        self.random_crop = random_crop
         self.seed = seed
         self.files = list_split_files(manifest_path, dataset_dir, split, limit, seed)
 
@@ -91,12 +97,19 @@ class FirePatchDataset(Dataset):
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
         data = np.load(self.files[index])
-        patch = center_crop(data["patch"], self.crop_size)
-        mask = center_crop(data["mask"], self.crop_size).astype(np.float32)
-        patch = normalize_patch(patch, self.band_stats)
         # Training draws from the `random` module, which DataLoader seeds differently
         # in each worker; a per-dataset Random would repeat the same sequence in all.
         rng = random if self.augment else random.Random(self.seed * 1_000_003 + index)
+        if self.random_crop:
+            height, width = data["mask"].shape
+            top = rng.randint(0, height - self.crop_size)
+            left = rng.randint(0, width - self.crop_size)
+            rows, cols = slice(top, top + self.crop_size), slice(left, left + self.crop_size)
+            patch, mask = data["patch"][:, rows, cols], data["mask"][rows, cols].astype(np.float32)
+        else:
+            patch = center_crop(data["patch"], self.crop_size)
+            mask = center_crop(data["mask"], self.crop_size).astype(np.float32)
+        patch = normalize_patch(patch, self.band_stats)
         if self.augment:
             patch, mask = _random_augment(patch, mask, rng)
         if self.max_shift:

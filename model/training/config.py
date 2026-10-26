@@ -26,6 +26,13 @@ class TrainingConfig:
     #: random, val/test: fixed per sample) keeps the model from learning "the fire is
     #: in the middle", which never holds on the inference tiles. 0 disables it.
     max_shift: int
+    #: Crop crop_size at a random position inside the stored 33x33 patch instead of
+    #: shifting (dataset.FirePatchDataset). Leaves no filled border to give the fire's
+    #: position away; use with max_shift 0 and a crop_size under 33 (e.g. 24).
+    random_crop: bool
+    #: Sample train patches so each UTC hour has as much fire as fire-free weight
+    #: (strata.hour_balance_weights), removing the time-of-day shortcut.
+    balance_hours: bool
     num_workers: int
     seed: int
     checkpoint_dir: Path
@@ -46,6 +53,8 @@ def default_config(checkpoint_dir: Path | None = None) -> TrainingConfig:
         seg_threshold=0.5,
         recall_target=0.95,
         max_shift=8,
+        random_crop=False,
+        balance_hours=False,
         num_workers=0,
         seed=0,
         checkpoint_dir=checkpoint_dir if checkpoint_dir is not None else Path("model/checkpoints"),
