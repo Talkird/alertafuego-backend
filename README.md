@@ -155,6 +155,9 @@ no ve bajo nubes). `calibrate` elige con las escenas de val un umbral de día y 
 noche (`threshold` y `night_threshold` en `model_config.json`): el que encuentra más
 píxeles de fuego sin superar las falsas detecciones agrupadas por escena de FDCF en esas
 mismas escenas (o `--false-cluster-budget N`). `--tta` promedia las 8 rotaciones/reflejos.
+`fetch --previous 2` guarda además las dos imágenes anteriores (10 y 20 min antes) de una
+de cada tres escenas; con ellas `score` agrega el modelo con confirmación en el tiempo
+(`model 2of2`, `model 2of3`) y sin ella en las mismas escenas (`model 1of1`).
 
 Para desplegar un modelo, subir los tres archivos al bucket de artefactos (ver
 `terraform/README.md`).

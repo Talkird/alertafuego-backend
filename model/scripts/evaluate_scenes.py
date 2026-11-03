@@ -15,7 +15,9 @@ Two steps:
            the checkpoint's model_config.json.
     score  runs offline on the cache and writes one row per scene and threshold, for
            the model, NOAA's FDCF fire product (no threshold), and model OR FDCF.
-           Without --thresholds, the checkpoint's own (day/night) thresholds.
+           Without --thresholds, the checkpoint's own (day/night) thresholds. Scenes
+           fetched with --previous also get the model confirmed over time ("model
+           2of2", "model 2of3") and alone on the same scenes ("model 1of1").
 
 Example:
     python -m model.scripts.evaluate_scenes fetch
@@ -82,6 +84,10 @@ VIIRS_SLICE = timedelta(hours=3)
 #: On whole scenes the best thresholds sit far below the patch ones (b-shift: ~0.001),
 #: so calibration also tries these.
 SCENE_THRESHOLD_CANDIDATES = [0.00005, 0.0001, 0.0002, 0.0005] + THRESHOLD_CANDIDATES
+#: GOES-19 full disk cadence: fetch --previous caches the images this far apart
+#: before every PREVIOUS_SCENE_STEP-th scene, to evaluate confirmation over time.
+GOES_INTERVAL = timedelta(minutes=10)
+PREVIOUS_SCENE_STEP = 3
 SCENES_FILENAME = "scenes.csv"
 POLYGON_FILENAME = "argentina.geojson"
 RESULTS_FIELDNAMES = [
@@ -97,6 +103,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-dir", type=Path, default=Path("model/scene_eval"))
     parser.add_argument("--dataset-dir", type=Path, default=Path("model/dataset"))
     parser.add_argument("--scenes", type=int, default=30, help="fetch: how many scenes to pick.")
+    parser.add_argument(
+        "--previous",
+        type=int,
+        default=0,
+        help=f"fetch: also cache the N images before every {PREVIOUS_SCENE_STEP}rd scene (confirmation over time).",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--checkpoint-dir", type=Path, default=Path("model/checkpoints"))
     parser.add_argument("--thresholds", type=float, nargs="+", default=None, help="Default: the checkpoint's.")
@@ -263,6 +275,14 @@ def fetch(args: argparse.Namespace) -> None:
                 writer.writeheader()
                 writer.writerows(rows)
 
+        for k in range(1, args.previous + 1 if (i - 1) % PREVIOUS_SCENE_STEP == 0 else 1):
+            previous_path = args.cache_dir / f"{scene['scene']}_prev{k}.npz"
+            if not previous_path.exists():
+                logger.info("Scene %d/%d: %s, image %d before", i, len(scenes), scene["scene"], k)
+                goes_image = _image_at(GOES_COLLECTION_ID, when - k * GOES_INTERVAL, timedelta(minutes=1))
+                raster = assemble_raster(fetch_calibrated_chunks(goes_image, bbox, cfg.chunk_size_px), bbox)
+                np.savez_compressed(previous_path, raster=raster)
+
 
 def _dilate(mask: np.ndarray) -> np.ndarray:
     """Pixels within 1 pixel (8 neighbors) of a True pixel."""
@@ -343,6 +363,12 @@ def _score_scenes(args: argparse.Namespace, scenes: list[dict], thresholds: list
             scored_area = shapely.contains_xy(polygon, lon_grid, lat_grid)
 
         probabilities = predict_raster(model, band_stats, raster, device, tta=args.tta)
+        previous_paths = [args.cache_dir / f"{scene['scene']}_prev{k}.npz" for k in (1, 2)]
+        previous = (
+            [predict_raster(model, band_stats, np.load(p)["raster"], device, tta=args.tta) for p in previous_paths]
+            if all(p.exists() for p in previous_paths)
+            else []
+        )
 
         when = datetime.fromisoformat(scene["goes_time"])
         with (args.cache_dir / f"{scene['scene']}_viirs.csv").open(newline="", encoding="utf-8") as f:
@@ -372,6 +398,18 @@ def _score_scenes(args: argparse.Namespace, scenes: list[dict], thresholds: list
                 | {"detector": "model|fdcf", "threshold": label}
                 | score_detection(predicted | fdcf, fires, confirmed)
             )
+            # Confirmation over time (alerts.CONFIRM_ALERTS), on scenes with the two
+            # previous images cached: a pixel counts only if one within 1 pixel was
+            # also detected in the previous image (2of2) or either of the two (2of3).
+            # 1of1 is the plain model on the same scenes, for comparison.
+            if previous:
+                seen = [_dilate((p >= threshold) & scored_area) for p in previous]
+                for name, earlier in (("1of1", np.ones_like(predicted)), ("2of2", seen[0]), ("2of3", seen[0] | seen[1])):
+                    results.append(
+                        scene_row
+                        | {"detector": f"model {name}", "threshold": label}
+                        | score_detection(predicted & earlier, fires, confirmed)
+                    )
         logger.info("Scored %s: %d fire pixels", scene["scene"], int(fires.sum()))
     return results
 

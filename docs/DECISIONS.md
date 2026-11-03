@@ -478,10 +478,20 @@ Threshold sweep on the val-day scenes (11; day 5, night 6), whole-scene predicti
 - `GROUP_FIRES=1` (`InferenceConfig.group_fires`): `run_detection` groups 8-connected detected pixels (`model/inference/clusters.py`, moved from `evaluate_scenes`) and keeps the most probable pixel of each group, with its own threshold and thumbnail. The API and DB shapes don't change, only the number of rows. The frontend needs nothing.
 - `CONFIRM_ALERTS=1` (`alerts._matches`): a detection only alerts if another stored detection lies within 3 km (`CONFIRM_RADIUS_KM`, a pixel and its diagonal neighbours) in the 25 minutes before it (`CONFIRM_WINDOW`). With detection every 10 minutes this is 2 of the last 3 images; with the current 20-minute schedule, 2 of the last 2 runs. Unconfirmed detections are stored and shown on the map as before; the cooldown still applies after confirmation.
 **Results:** grouping on the 19 cached test scenes, b-shift at day 0.005 / night 0.08: 28.4 detections per scene become 15.3, and the VIIRS fire clusters near a detection go from 16.05% to 15.89% (192 to 190 of 1,196): two lost where a group's peak lies over 1 px from a fire its other pixels touched.
+
+Confirmation, on the 10 scenes fetched with their two previous images (`evaluate_scenes fetch --previous 2`, every third scene: 3 day, 7 night; 20 images, 84 min of Earth Engine), b-shift at day 0.005 / night 0.08, pixels within 1 px of a detection in an earlier image:
+
+| | Fire pixel recall (day / night) | Cluster recall | Precision (VIIRS ±12 h) | False clusters / scene (day / night) |
+|---|---|---|---|---|
+| No confirmation | 15.1% (50.0 / 6.8) | 11.5% | 88.6% | 2.7 (8.7 / 0.1) |
+| 2 of 2 images | 11.6% (41.4 / 4.6) | 8.7% | 93.9% | 1.2 (3.7 / 0.1) |
+| 2 of 3 images | 12.9% (45.7 / 5.1) | 9.8% | 93.7% | 1.3 (4.0 / 0.1) |
+
+2 of 3 removes half of the false clusters (day: 8.7 to 4.0 per scene) and keeps 85% of the fire clusters found. Ten scenes, three of them by day, so the size of the effect is rough; its direction matches the expectation that false alarms are brief.
 **Alternatives considered:**
 - Add `pixel_count` to each detection: more information for the map, but a DB migration and a contract change. Deferred until the frontend wants it.
 - Confirm by pixel identity instead of distance: the grouped peak can move a pixel between images; a radius tolerates it.
 **Consequences:**
-- Confirmation is not evaluated: it needs the two images before each cached scene (about 2 x 10 scenes from Earth Engine). Pending the user's approval to fetch them.
+- Since confirmation halves false clusters, a confirmed detector could run at a lower threshold within the same FDCF budget and win back the recall it loses. Calibrating that needs more val scenes with previous images (only 4 of the 10 are val); not done.
 - Confirmation delays every alert by one image (10-20 min), and fires seen in one image only never alert. Combined with FDCF's 28-minute head start (stage 2), it costs most of the latency advantage of a model alert.
 - Alert areas default to `min_probability` 0.65 (`AlertAreaCreate`), far above the stage 3 thresholds: with these settings most detections show on the map but never alert. Lowering that default (e.g. to the model threshold, relying on confirmation to filter noise) is a product decision; the frontend colors detections at 0.65 too (`dashboard.vue`, `mapa.vue`).
