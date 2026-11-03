@@ -136,13 +136,14 @@ de paso de VIIRS). `results.json` incluye test por estrato (`test_by_stratum`).
 ### Evaluación sobre escenas completas
 
 Las métricas por parche no reflejan producción: miran parches de 32x32 centrados cerca de
-un foco. `evaluate_scenes` corre el modelo sobre toda Argentina, con el mismo tileado
-que la inferencia, en ~30 imágenes GOES-19 de días de val/test a la hora de un paso de
+un foco. `evaluate_scenes` corre el modelo sobre toda Argentina, igual que la
+inferencia (todo el raster), en ~30 imágenes GOES-19 de días de val/test a la hora de un paso de
 VIIRS:
 
 ```
 python -m model.scripts.evaluate_scenes fetch    # una vez, ~1 h de Earth Engine, ~600 MB
-python -m model.scripts.evaluate_scenes score --checkpoint-dir model/checkpoints/b-shift
+python -m model.scripts.evaluate_scenes calibrate --checkpoint-dir model/checkpoints/b-shift
+python -m model.scripts.evaluate_scenes score --checkpoint-dir model/checkpoints/b-shift --split test
 ```
 
 `fetch` guarda en `model/scene_eval/` (ignorado por git) cada escena, la máscara FDCF de
@@ -150,7 +151,10 @@ NOAA y todas las detecciones VIIRS a ±12 h; si se corta, se vuelve a correr y s
 `score` es offline y escribe `scene_results.csv` en el checkpoint: recall de píxeles y de
 focos (grupos de píxeles vecinos) frente a VIIRS del mismo paso, y falsas detecciones
 (predicciones sin ninguna detección VIIRS a 1 píxel y 12 h; cota superior, porque VIIRS
-no ve bajo nubes).
+no ve bajo nubes). `calibrate` elige con las escenas de val un umbral de día y uno de
+noche (`threshold` y `night_threshold` en `model_config.json`): el que encuentra más
+píxeles de fuego sin superar las falsas detecciones agrupadas por escena de FDCF en esas
+mismas escenas (o `--false-cluster-budget N`). `--tta` promedia las 8 rotaciones/reflejos.
 
 Para desplegar un modelo, subir los tres archivos al bucket de artefactos (ver
 `terraform/README.md`).

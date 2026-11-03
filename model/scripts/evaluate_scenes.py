@@ -10,8 +10,9 @@ Two steps:
            where available, then random extras up to --scenes) and caches each one
            once from Earth Engine in --cache-dir: the 16-band raster, the FDCF fire
            Mask, and every VIIRS detection within 12 h. Re-running skips cached scenes.
-    calibrate  offline: picks the day and the night threshold with the best F2 on the
-           val scenes and saves them in the checkpoint's model_config.json.
+    calibrate  offline: picks the day and the night threshold on the val scenes (most
+           fires found within FDCF's false clusters per scene) and saves them in
+           the checkpoint's model_config.json.
     score  runs offline on the cache and writes one row per scene and threshold, for
            the model, NOAA's FDCF fire product (no threshold), and model OR FDCF.
            Without --thresholds, the checkpoint's own (day/night) thresholds.
@@ -100,7 +101,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--thresholds", type=float, nargs="+", default=None, help="Default: the checkpoint's.")
     parser.add_argument("--output", type=Path, default=None, help="Default: <checkpoint-dir>/scene_results.csv.")
     parser.add_argument("--split", choices=["val", "test"], default=None, help="score: only this split's scenes.")
-    parser.add_argument("--tta", action="store_true", help="score: average over the 8 flips and rotations.")
+    parser.add_argument("--tta", action="store_true", help="Average over the 8 flips and rotations.")
+    parser.add_argument(
+        "--false-cluster-budget",
+        type=float,
+        default=None,
+        help="calibrate: max false clusters per scene (default: FDCF's on the val scenes, day and night apart).",
+    )
     return parser.parse_args()
 
 
@@ -411,23 +418,42 @@ def _totals(rows: list[dict]) -> dict:
 
 
 def calibrate(args: argparse.Namespace) -> None:
-    """Pick the day and the night threshold with the best F2 (fire pixel recall
-    weighted twice as much as precision) on the val scenes, and save them in the
-    checkpoint's model_config.json. Report test scenes afterwards with score."""
-    results = [
-        r for r in _score_scenes(args, _load_scenes(args, "val"), SCENE_THRESHOLD_CANDIDATES) if r["detector"] == "model"
-    ]
+    """Pick the day and the night threshold on the val scenes and save them in the
+    checkpoint's model_config.json. Report test scenes afterwards with score.
+
+    Each is the threshold that finds the most fire pixels without more false
+    clusters per scene than the budget: by default FDCF's own on the same scenes
+    (day and night apart), so the system is no noisier than NOAA's product.
+    --false-cluster-budget sets one budget for both instead. Best F2 is not the
+    rule: it picks thresholds with ~150-230 false clusters per scene."""
+    results = _score_scenes(args, _load_scenes(args, "val"), SCENE_THRESHOLD_CANDIDATES)
+    n_scenes = {dn: len({r["scene"] for r in results if r["daynight"] == dn}) for dn in ("day", "night")}
     chosen = {}
-    print(f"\n{'scenes':>6}  {'threshold':>9}  {'fire_rec':>8}  {'prec_tol':>8}  {'f2':>6}")
+    print(f"\n{'scenes':>6}  {'threshold':>9}  {'fire_rec':>8}  {'prec_tol':>8}  {'f2':>6}  {'false_clusters/scene':>20}")
     for daynight in ("day", "night"):
-        sweep = []
+        fdcf = _totals([r for r in results if r["daynight"] == daynight and r["detector"] == "fdcf"])
+        budget = (
+            args.false_cluster_budget
+            if args.false_cluster_budget is not None
+            else fdcf["false_clusters"] / n_scenes[daynight]
+        )
+        print(f"{daynight:>6}  {'fdcf':>9}  {fdcf['fire_recall']:>8.4f}  {fdcf['precision_tol']:>8.4f}  {fdcf['f2']:>6.4f}"
+              f"  {fdcf['false_clusters'] / n_scenes[daynight]:>20.1f}")
+        within = []
         for threshold in SCENE_THRESHOLD_CANDIDATES:
-            total = _totals([r for r in results if r["daynight"] == daynight and r["threshold"] == threshold])
-            sweep.append((total["f2"], threshold))
-            print(f"{daynight:>6}  {threshold:>9}  {total['fire_recall']:>8.4f}  {total['precision_tol']:>8.4f}  {total['f2']:>6.4f}")
-        chosen[daynight] = max(sweep)[1]
-        if chosen[daynight] == SCENE_THRESHOLD_CANDIDATES[0]:
-            logger.warning("%s: best F2 at the lowest candidate %s; a lower one may be better", daynight, chosen[daynight])
+            rows = [r for r in results if r["daynight"] == daynight and r["detector"] == "model" and r["threshold"] == threshold]
+            total = _totals(rows)
+            false_per_scene = total["false_clusters"] / n_scenes[daynight]
+            if false_per_scene <= budget:
+                within.append((total["fire_recall"], threshold))
+            print(f"{daynight:>6}  {threshold:>9}  {total['fire_recall']:>8.4f}  {total['precision_tol']:>8.4f}"
+                  f"  {total['f2']:>6.4f}  {false_per_scene:>20.1f}")
+        if within:
+            chosen[daynight] = max(within)[1]
+        else:
+            chosen[daynight] = SCENE_THRESHOLD_CANDIDATES[-1]
+            logger.warning("%s: no threshold within %.1f false clusters per scene; using the highest", daynight, budget)
+        logger.info("%s: budget %.1f false clusters per scene, threshold %s", daynight, budget, chosen[daynight])
     model_cfg = load_model_config(args.checkpoint_dir)
     save_model_config(
         replace(model_cfg, threshold=chosen["day"], night_threshold=chosen["night"]), args.checkpoint_dir

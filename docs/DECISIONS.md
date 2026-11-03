@@ -425,13 +425,23 @@ Per scene, threshold 0.08:
 **Context:** Stage 3 of the recall plan. The stage 1 entry found that production tiles only find fires at tile centers (shift leak) and that fire-free samples at 16-19 UTC are scarce (17-18 UTC: 90-94% of train samples are fire). This entry covers what changed without training and prepares one desktop training run.
 **Decision:**
 - `predictor.predict_raster`: the model runs on the whole raster in 512 px blocks with a 64 px margin (same output as one pass, ~5 s on CPU) instead of 32x32 tiles. Used by `service.run_detection` and `evaluate_scenes`. Optional flip/rotation averaging (TTA, `--tta`, ~29 s on CPU).
-- Day/night thresholds: `ModelConfig.night_threshold` (optional; old checkpoints keep one threshold), applied per pixel by sun position in `run_detection`; each detection stores its own threshold. `evaluate_scenes calibrate` picks both by best F2 on the val-day scenes.
+- Day/night thresholds: `ModelConfig.night_threshold` (optional; old checkpoints keep one threshold), applied per pixel by sun position in `run_detection`; each detection stores its own threshold. `evaluate_scenes calibrate` picks both on the val-day scenes: the threshold with the highest fire pixel recall whose false clusters per scene stay within FDCF's on the same scenes, day and night apart (`--false-cluster-budget` overrides).
 - Training, behind options (defaults unchanged until the run confirms them):
   - `--random-crop --crop-size 24 --max-shift 0`: crop 24x24 at a random position inside the stored 33x33 patch (val/test: fixed per sample) instead of shifting with a zero-filled border. No pixel is invented, so nothing marks the fire's position. On 1,478 val fire patches, none loses its fire to the crop.
   - `--balance-hours`: a weighted sampler (`strata.hour_balance_weights`) gives fire and fire-free samples the same weight within each UTC hour, at most 10x per sample. Hours with only one kind keep weight 1: 12 of 24 hours have no fire samples, and 07 and 20 UTC (3 and 21 fires) stay unbalanced at the cap. The effective fire share drops from 50% to 33% of train draws, and 943 fire-free samples at 18 UTC are drawn ~8x per epoch, so augmentation carries more weight.
 **Results (b-shift, no retraining):**
 
-Test-day scenes (19), calibrated thresholds day 0.0002 / night 0.0005: fire pixel recall 54.3% (day 61.2, night 27.0), cluster recall 48.9%, precision 33%, 155 false clusters per scene. With TTA: 55.9%, precision 36%, 140 false clusters. Same scenes with tiles at 0.08: 8.8% recall, 8.7% precision, 67 false clusters. FDCF: 14.8%, 70%, 5.
+Operating point, chosen on val scenes with FDCF's false clusters as the budget (day 10.0, night 2.0 per scene): day 0.005, night 0.08. Test-day scenes (19), scored once:
+
+| Detector | Fire pixel recall (day / night) | Cluster recall | Precision (VIIRS ±12 h) | False clusters / scene (day / night) |
+|---|---|---|---|---|
+| b-shift, day 0.005 / night 0.08 | 20.0% (23.6 / 5.9) | 16.1% | 69.2% | 3.2 (5.0 / 0.1) |
+| FDCF | 14.8% (18.2 / 1.3) | 11.0% | 70.3% | 5.1 (8.0 / 0.0) |
+| b-shift OR FDCF | 22.5% (26.6 / 6.1) | 17.9% | 63.9% | 7.6 (12.0 / 0.1) |
+
+At the same precision as FDCF, b-shift finds 35% more fire pixels with fewer false clusters. On test both detectors produced fewer false clusters than on val, so the budget held with room to spare.
+
+For reference, the earlier F2 calibration (day 0.0002 / night 0.0005) on the same test scenes: fire pixel recall 54.3% (day 61.2, night 27.0), cluster recall 48.9%, precision 33%, 155 false clusters per scene. With TTA: 55.9%, precision 36%, 140 false clusters. Same scenes with tiles at 0.08: 8.8% recall, 8.7% precision, 67 false clusters. FDCF: 14.8%, 70%, 5.
 
 Threshold sweep on the val-day scenes (11; day 5, night 6), whole-scene prediction:
 
@@ -451,11 +461,12 @@ Threshold sweep on the val-day scenes (11; day 5, night 6), whole-scene predicti
 **Findings:**
 - Predicting the whole raster removes most of the tile damage without retraining: at the deployed 0.08, precision goes from 11.6% (tiles, all 30 scenes, stage 1) to 93.3% (val scenes).
 - On val scenes b-shift now matches FDCF: at 0.01 it finds the same share of fire pixels (20.9% vs 20.8%) with about the same false clusters (6.2 vs 5.6). At night it finds 2-5x FDCF's recall at every threshold up to 0.02.
-- The F2 calibration picks the lowest thresholds (~150-230 false clusters per scene), too many for alerts. The operating point should come from a false-alarm budget, not F2.
+- The F2 calibration picks the lowest thresholds (~150-230 false clusters per scene), too many for alerts. The operating point comes from a false-alarm budget instead: no noisier than FDCF, NOAA's operational product, per day and night. Raising the budget buys recall (val day: 18 false clusters per scene gives 42% vs 29%); it's one option, not a retrain.
 **Alternatives considered:**
 - Reflect-pad or wrap the shifted border: no zeros, but the mirror axis or seam still marks the shift. Rejected for the random crop, which adds no synthetic pixels and costs 8 px of context (24 vs 32).
 - Downsample fire samples at 16-19 UTC to balance hours: discards ~26,000 fire samples. Rejected for weighting.
 **Consequences:**
-- Pending, user decision: the operating point (false clusters per scene the system accepts).
+- Recall on full scenes stays far from 95%: most VIIRS fire pixels are too small for GOES at 2 km (stage 1: FDCF finds 75% only above 100 MW). 95% is reachable on patches, not on all VIIRS pixels.
+- To deploy b-shift at this operating point: set `threshold` 0.005 and `night_threshold` 0.08 in its `model_config.json`. Alerts filter at `min_probability` 0.65 by default, so these detections show on the map but don't alert (stage 4).
 - Pending, desktop run: train with `--random-crop --crop-size 24 --max-shift 0 --balance-hours` on `manifest_holdout.csv`, calibrate on val scenes, and compare with b-shift on the same scenes, per hour, and with and without TTA. If it wins, make these options the defaults.
 - `evaluate_model` still scores patches with the zero-border shift; patch metrics remain for comparing runs only.
