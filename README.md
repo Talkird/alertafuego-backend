@@ -191,6 +191,14 @@ escribe en la base y puede disparar alertas. En `/docs`, cargarla con **Authoriz
 curl -X POST -H "X-API-Key: $DETECT_API_KEY" <URL backend>/detect/argentina
 ```
 
+Dos opciones por variable de entorno, apagadas por defecto:
+
+- `GROUP_FIRES=1`: una detección por grupo de píxeles vecinos (el de mayor
+  probabilidad) en vez de una por píxel. La forma de la respuesta no cambia.
+- `CONFIRM_ALERTS=1`: una detección solo dispara alertas (email/Telegram) si hay otra a
+  3 km o menos en una de las dos imágenes anteriores (25 min): 2 de las últimas 3 con
+  detección cada 10 minutos. En el mapa se ve igual desde la primera imagen.
+
 - `GET /detections` — lectura pura sobre lo ya guardado, sin llamar a Earth Engine,
   rápido. Filtros opcionales por query params: `west/south/east/north` (bbox),
   `since`/`until` (rango de `image_time`, ISO datetime), `region_code` o `area_id`

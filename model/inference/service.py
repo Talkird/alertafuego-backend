@@ -12,6 +12,7 @@ from shapely.geometry.base import BaseGeometry
 
 from model.data_pipeline.config import BBox
 from model.data_pipeline.ee_client import init_earth_engine
+from model.inference.clusters import clusters
 from model.inference.config import InferenceConfig, default_config
 from model.inference.land_filter import filter_to_polygon, load_argentina_polygon
 from model.inference.predictor import load_model, predict_raster
@@ -83,8 +84,14 @@ def run_detection(
         lon_grid, lat_grid = np.meshgrid(lon, lat)
         thresholds[~is_day(lat_grid, lon_grid, image_time)] = night_threshold
 
+    fire = probabilities >= thresholds
+    if ctx.cfg.group_fires:
+        pixels = sorted(max(group, key=lambda p: probabilities[p]) for group in clusters(fire))
+    else:
+        pixels = list(zip(*fire.nonzero()))
+
     detections: list[tuple[float, float, float, float, int, int]] = []  # lat, lon, probability, threshold, row, col
-    for row, col in zip(*(probabilities >= thresholds).nonzero()):
+    for row, col in pixels:
         row, col = int(row), int(col)
         lat, lon = pixel_to_latlon(row, col, bbox, (height, width))
         detections.append((lat, lon, float(probabilities[row, col]), float(thresholds[row, col]), row, col))

@@ -470,3 +470,18 @@ Threshold sweep on the val-day scenes (11; day 5, night 6), whole-scene predicti
 - To deploy b-shift at this operating point: set `threshold` 0.005 and `night_threshold` 0.08 in its `model_config.json`. Alerts filter at `min_probability` 0.65 by default, so these detections show on the map but don't alert (stage 4).
 - Pending, desktop run: train with `--random-crop --crop-size 24 --max-shift 0 --balance-hours` on `manifest_holdout.csv`, calibrate on val scenes, and compare with b-shift on the same scenes, per hour, and with and without TTA. If it wins, make these options the defaults.
 - `evaluate_model` still scores patches with the zero-border shift; patch metrics remain for comparing runs only.
+
+### [2026-11-03] — Stage 4: one detection per fire, and alerts only after a second image (both off by default)
+
+**Context:** Stage 4 of the recall plan. Stage 3's operating point (day 0.005, night 0.08) stores every pixel above the threshold, so one fire front shows as several detections. GOES false alarms (sun glint, hot ground, cloud edges) are mostly brief, while fires last hours, so a second sighting is strong evidence.
+**Decision:**
+- `GROUP_FIRES=1` (`InferenceConfig.group_fires`): `run_detection` groups 8-connected detected pixels (`model/inference/clusters.py`, moved from `evaluate_scenes`) and keeps the most probable pixel of each group, with its own threshold and thumbnail. The API and DB shapes don't change, only the number of rows. The frontend needs nothing.
+- `CONFIRM_ALERTS=1` (`alerts._matches`): a detection only alerts if another stored detection lies within 3 km (`CONFIRM_RADIUS_KM`, a pixel and its diagonal neighbours) in the 25 minutes before it (`CONFIRM_WINDOW`). With detection every 10 minutes this is 2 of the last 3 images; with the current 20-minute schedule, 2 of the last 2 runs. Unconfirmed detections are stored and shown on the map as before; the cooldown still applies after confirmation.
+**Results:** grouping on the 19 cached test scenes, b-shift at day 0.005 / night 0.08: 28.4 detections per scene become 15.3, and the VIIRS fire clusters near a detection go from 16.05% to 15.89% (192 to 190 of 1,196): two lost where a group's peak lies over 1 px from a fire its other pixels touched.
+**Alternatives considered:**
+- Add `pixel_count` to each detection: more information for the map, but a DB migration and a contract change. Deferred until the frontend wants it.
+- Confirm by pixel identity instead of distance: the grouped peak can move a pixel between images; a radius tolerates it.
+**Consequences:**
+- Confirmation is not evaluated: it needs the two images before each cached scene (about 2 x 10 scenes from Earth Engine). Pending the user's approval to fetch them.
+- Confirmation delays every alert by one image (10-20 min), and fires seen in one image only never alert. Combined with FDCF's 28-minute head start (stage 2), it costs most of the latency advantage of a model alert.
+- Alert areas default to `min_probability` 0.65 (`AlertAreaCreate`), far above the stage 3 thresholds: with these settings most detections show on the map but never alert. Lowering that default (e.g. to the model threshold, relying on confirmation to filter noise) is a product decision; the frontend colors detections at 0.65 too (`dashboard.vue`, `mapa.vue`).

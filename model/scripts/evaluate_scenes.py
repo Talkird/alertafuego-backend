@@ -62,6 +62,7 @@ from model.inference.predictor import load_model, predict_raster
 from model.inference.raster_fetch import compute_chunk_grid, fetch_calibrated_chunks
 from model.inference.tiling import assemble_raster
 from model.training.config import THRESHOLD_CANDIDATES, load_model_config, save_model_config
+from model.inference.clusters import clusters
 from model.training.metrics import f_beta
 from model.training.normalization import load_band_stats
 
@@ -268,27 +269,6 @@ def _dilate(mask: np.ndarray) -> np.ndarray:
     padded = np.pad(mask, 1)
     height, width = mask.shape
     return np.max([padded[dy : dy + height, dx : dx + width] for dy in range(3) for dx in range(3)], axis=0)
-
-
-def clusters(mask: np.ndarray) -> list[list[tuple[int, int]]]:
-    """Groups of 8-connected True pixels. The masks here are sparse, so a search over
-    the True pixels is enough."""
-    remaining = set(zip(*np.nonzero(mask)))
-    groups = []
-    while remaining:
-        stack = [remaining.pop()]
-        group = []
-        while stack:
-            row, col = stack.pop()
-            group.append((row, col))
-            for dy in (-1, 0, 1):
-                for dx in (-1, 0, 1):
-                    neighbor = (row + dy, col + dx)
-                    if neighbor in remaining:
-                        remaining.remove(neighbor)
-                        stack.append(neighbor)
-        groups.append(group)
-    return groups
 
 
 def _viirs_mask(rows: list[dict], shape_hw: tuple[int, int], bbox) -> np.ndarray:

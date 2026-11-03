@@ -4,6 +4,7 @@ by email (to their confirmed alternate address, if they set one, unless they tur
 email off) and by Telegram, if they connected it."""
 
 import math
+import os
 from datetime import timedelta
 
 from geoalchemy2.shape import to_shape
@@ -22,6 +23,17 @@ from backend.app.tokens import utcnow
 COOLDOWN = timedelta(hours=6)
 COOLDOWN_RADIUS_KM = 5.0
 
+#: With CONFIRM_ALERTS=1 (off by default) a detection only alerts if another one lies
+#: within CONFIRM_RADIUS_KM (a pixel and its neighbours) in one of the two previous
+#: GOES images (CONFIRM_WINDOW): 2 of the last 3 images with detection every 10
+#: minutes, 2 of the last 2 runs every 20. Unconfirmed detections still show on the map.
+CONFIRM_WINDOW = timedelta(minutes=25)
+CONFIRM_RADIUS_KM = 3.0
+
+
+def _confirm_alerts() -> bool:
+    return os.getenv("CONFIRM_ALERTS") == "1"
+
 
 def _distance_km(a: tuple[float, float], b: tuple[float, float]) -> float:
     """Haversine distance between two (lat, lon) points."""
@@ -32,8 +44,8 @@ def _distance_km(a: tuple[float, float], b: tuple[float, float]) -> float:
 
 def _matches(session: Session, detection_ids: list[int]) -> list[tuple[AlertArea, Detection]]:
     """(area, detection) pairs for active areas containing a new detection at or above
-    the area's min_probability, minus those still in cooldown. Highest probability first
-    within each area."""
+    the area's min_probability, minus those still in cooldown (and, with CONFIRM_ALERTS,
+    those not yet confirmed). Highest probability first within each area."""
     previous = aliased(Detection)
     in_cooldown = (
         exists()
@@ -46,6 +58,18 @@ def _matches(session: Session, detection_ids: list[int]) -> list[tuple[AlertArea
             ),
         )
         .correlate(AlertArea, Detection)
+    )
+    earlier = aliased(Detection)
+    confirmed = (
+        exists()
+        .where(
+            earlier.image_time < Detection.image_time,
+            earlier.image_time >= Detection.image_time - CONFIRM_WINDOW,
+            func.ST_DWithin(
+                func.geography(earlier.location), func.geography(Detection.location), CONFIRM_RADIUS_KM * 1000
+            ),
+        )
+        .correlate(Detection)
     )
     query = (
         select(AlertArea, Detection)
@@ -65,6 +89,7 @@ def _matches(session: Session, detection_ids: list[int]) -> list[tuple[AlertArea
             AlertArea.active,
             Detection.probability >= AlertArea.min_probability,
             ~in_cooldown,
+            *([confirmed] if _confirm_alerts() else []),
         )
         .order_by(AlertArea.id, Detection.probability.desc())
     )

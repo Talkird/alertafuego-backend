@@ -1,5 +1,6 @@
 """Configuration for on-demand model serving."""
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +23,9 @@ class InferenceConfig:
     chunk_size_px: int
     #: Average predictions over the 8 flips and rotations (predictor.predict_raster).
     tta: bool
+    #: Report one detection per group of adjacent fire pixels (the most probable one)
+    #: instead of one per pixel. Env GROUP_FIRES=1; off by default.
+    group_fires: bool
     checkpoint_dir: Path
 
 
@@ -31,5 +35,6 @@ def default_config(checkpoint_dir: Path | None = None) -> InferenceConfig:
         argentina_bbox=default_pipeline_config().argentina_bbox,
         chunk_size_px=CHUNK_SIZE_PX,
         tta=False,
+        group_fires=os.getenv("GROUP_FIRES") == "1",
         checkpoint_dir=checkpoint_dir if checkpoint_dir is not None else Path("model/checkpoints"),
     )
