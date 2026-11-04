@@ -78,9 +78,12 @@ CONFIRM_WINDOW = timedelta(hours=12)
 #: VIIRS is queried in slices this long, filtered by acquisition time on the server,
 #: so each query holds about one overpass per satellite and stays under the feature cap.
 VIIRS_SLICE = timedelta(hours=3)
-#: On whole scenes the best thresholds sit far below the patch ones (b-shift: ~0.001),
-#: so calibration also tries these.
-SCENE_THRESHOLD_CANDIDATES = [0.00005, 0.0001, 0.0002, 0.0005] + THRESHOLD_CANDIDATES
+#: On whole scenes the best thresholds can sit far below the patch ones (b-shift:
+#: ~0.001) or far above them (d-noleak's probabilities saturate: 52 false clusters
+#: per day scene at 0.9), so calibration also tries these.
+SCENE_THRESHOLD_CANDIDATES = (
+    [0.00005, 0.0001, 0.0002, 0.0005] + THRESHOLD_CANDIDATES + [0.95, 0.98, 0.99, 0.995, 0.998, 0.999]
+)
 SCENES_FILENAME = "scenes.csv"
 POLYGON_FILENAME = "argentina.geojson"
 RESULTS_FIELDNAMES = [
