@@ -106,12 +106,13 @@ python -m model.scripts.train_model --epochs 30
 Usa el manifest combinado (`model/dataset/manifest.csv`, ver `merge_datasets`
 arriba). Args útiles: `--dataset-dir`, `--checkpoint-dir` (default `model/checkpoints`),
 `--batch-size`, `--lr`, `--num-workers`, `--base-channels`/`--depth` (tamaño del modelo),
-`--max-shift` (default 8: desplaza los parches para que el foco no quede siempre en el
-centro; 0 lo apaga; rellena el borde con ceros, que delata dónde está el foco),
-`--crop-size` (default 32) con `--random-crop` (recorta en una posición al azar dentro del
-parche de 33x33 en vez de desplazarlo: sin borde rellenado; usar con `--max-shift 0` y
-`--crop-size 24`), `--balance-hours` (muestrea fuego y no-fuego por igual dentro de cada
-hora UTC, para que la hora del día no prediga fuego), `--fn-weight` (default 0.7: peso Tversky de un píxel de fuego
+`--crop-size` (default 24) y `--random-crop` (default activo: recorta en una posición al
+azar dentro del parche de 33x33, así el foco no queda siempre en el centro y no hay borde
+rellenado que delate dónde está), `--no-random-crop --max-shift 8 --crop-size 32` (lo
+anterior: desplaza los parches rellenando el borde con ceros, que delata el foco; ver
+docs/DECISIONS.md), `--balance-hours` (default activo; `--no-balance-hours` lo apaga:
+muestrea fuego y no-fuego por igual dentro de cada hora UTC, para que la hora del día no
+prediga fuego), `--fn-weight` (default 0.7: peso Tversky de un píxel de fuego
 perdido frente a una falsa alarma; 0.5 es Dice), `--recall-target` (default 0.95),
 `--limit` (subset chico para smoke test). Corre en GPU si hay CUDA disponible (con
 precisión mixta) o MPS (Apple), si no cae a CPU automáticamente. El learning rate baja
