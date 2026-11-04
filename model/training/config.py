@@ -41,7 +41,7 @@ class TrainingConfig:
 def default_config(checkpoint_dir: Path | None = None) -> TrainingConfig:
     """Reasonable phase-2 defaults, sized for a 32x32x16 input on CPU-only training."""
     return TrainingConfig(
-        crop_size=32,
+        crop_size=24,
         batch_size=32,
         epochs=30,
         learning_rate=1e-3,
@@ -52,9 +52,9 @@ def default_config(checkpoint_dir: Path | None = None) -> TrainingConfig:
         fn_weight=0.7,
         seg_threshold=0.5,
         recall_target=0.95,
-        max_shift=8,
-        random_crop=False,
-        balance_hours=False,
+        max_shift=0,
+        random_crop=True,
+        balance_hours=True,
         num_workers=0,
         seed=0,
         checkpoint_dir=checkpoint_dir if checkpoint_dir is not None else Path("model/checkpoints"),

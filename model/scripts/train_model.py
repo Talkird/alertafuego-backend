@@ -49,16 +49,20 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--base-channels", type=int, default=None, help="Model width (default 16; 32 or 64 on a GPU).")
     parser.add_argument("--depth", type=int, default=None, help="Downsampling stages (default 3).")
     parser.add_argument(
-        "--max-shift", type=int, default=None, help="Max pixels patches are shifted off-center (default 8; 0: none)."
+        "--max-shift", type=int, default=None, help="Max pixels patches are shifted off-center (default 0: none)."
     )
-    parser.add_argument("--crop-size", type=int, default=None, help="Patch side the model trains on (default 32).")
+    parser.add_argument("--crop-size", type=int, default=None, help="Patch side the model trains on (default 24).")
     parser.add_argument(
         "--random-crop",
-        action="store_true",
-        help="Crop at a random position in the stored patch instead of shifting (use with --max-shift 0).",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Crop at a random position in the stored patch instead of shifting (default on; off: shift by --max-shift).",
     )
     parser.add_argument(
-        "--balance-hours", action="store_true", help="Sample fire and fire-free train patches evenly within each UTC hour."
+        "--balance-hours",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Sample fire and fire-free train patches evenly within each UTC hour (default on).",
     )
     parser.add_argument(
         "--fn-weight", type=float, default=None, help="Tversky weight of a missed fire pixel (default 0.7; 0.5: Dice)."
@@ -86,8 +90,8 @@ def main() -> None:
             "depth": args.depth,
             "max_shift": args.max_shift,
             "crop_size": args.crop_size,
-            "random_crop": args.random_crop or None,
-            "balance_hours": args.balance_hours or None,
+            "random_crop": args.random_crop,
+            "balance_hours": args.balance_hours,
             "fn_weight": args.fn_weight,
             "recall_target": args.recall_target,
         }.items()
