@@ -471,10 +471,12 @@ Threshold sweep on the val-day scenes (11; day 5, night 6), whole-scene predicti
 - Desktop run done: see "Stage 3 result" (2026-11-03). It wins; these options are now the defaults.
 - `evaluate_model` still scores patches with the zero-border shift; patch metrics remain for comparing runs only.
 
-### [2026-11-03] — Stage 3 result: d-noleak replaces b-shift, at day/night 0.995 without TTA
+### [2026-11-03] — Stage 3 result: deploy b-shift OR d-noleak; d-noleak alone misses most strong fires
 
 **Context:** The stage 3 desktop run: d-noleak, trained with `--random-crop --crop-size 24 --max-shift 0 --balance-hours` on `manifest_holdout.csv` (2025-07 and 2026-01 held out as test), 30 epochs, ~50 min on the RTX 4060. Compared with b-shift on the 30 cached scenes. Each model's thresholds were calibrated on the val scenes to FDCF's false-cluster budget; test was scored once.
-**Decision:** Deploy d-noleak with threshold 0.995 by day and by night, without TTA. Make its training options the defaults (`--no-random-crop --max-shift 8 --crop-size 32` restores the old ones; `--no-balance-hours`).
+**Decision:**
+- Recommended detector: the union of b-shift (day 0.005, night 0.08) and d-noleak (0.995 day and night), chosen on val. Production runs one model today, so the union needs a second model in `run_detection`. Until then, keep b-shift at its stage 3 thresholds: d-noleak alone misses two thirds of the strongest fires.
+- d-noleak's training options become the defaults (`--no-random-crop --max-shift 8 --crop-size 32` restores the old ones; `--no-balance-hours`). The leak fix is what makes the patch metrics honest.
 **Results:**
 
 Patches, held-out months test, threshold 0.001 (val never reaches 95%, so the lowest candidate): fire recall 75.0%, fire-free patches with any prediction 10.0%. Centered patches: 75.4% and 10.2%. b-shift scored 83.5% centered and 19.3% shifted, so the position dependence is gone. Per hour, false alarms range from 2.7% to 17.4%, highest at 15-17 UTC (15-17%) and 05 UTC (16%). b-shift had 9-13% at 15-17 UTC and 0.6-4.5% elsewhere at 0.08. The thresholds and test sets differ, so this only suggests that the midday peak is flatter.
@@ -494,15 +496,31 @@ Test scenes (19), each detector at its val-calibrated thresholds:
 | d-noleak OR FDCF, 0.995 | 28.6% (29.7 / 24.2) | 24.3% | 72.3% | 8.6 (12.7 / 1.7) |
 
 Confirmation in 2 of 3 images (10 scenes, d-noleak at 0.995): false clusters per scene fall from 6.5 to 3.6, and cluster recall from 20.3% to 17.5%.
+
+Share of overpass VIIRS fire pixels detected within 1 px, by FRP. Combinations were compared on val (11 scenes) and chosen there, then scored on test (19 scenes):
+
+| Detector | Val: fire px recall / false clusters per scene | Test: fire px recall | Test: cluster recall | Test: precision | Test: false clusters / scene | Test FRP 0-10 MW (10,914) | 10-30 (2,461) | 30-100 (724) | 100+ (253) |
+|---|---|---|---|---|---|---|---|---|---|
+| FDCF | 20.8% / 5.6 | 14.8% | 11.0% | 70.3% | 5.1 | 8.5% | 49.0% | 85.6% | 96.4% |
+| b-shift | 23.6% / 3.7 | 20.0% | 16.1% | 69.2% | 3.2 | 14.5% | 56.3% | 84.8% | 93.3% |
+| d-noleak | 23.3% / 3.5 | 22.5% | 20.7% | 81.0% | 4.1 | 19.7% | 42.2% | 52.1% | 32.4% |
+| **b-shift OR d-noleak** | 35.3% / 6.6 | **30.5%** | **26.3%** | 70.3% | 6.7 | 25.5% | 67.0% | 91.9% | 98.0% |
+| d-noleak OR FDCF | 35.7% / 8.6 | 28.6% | 24.3% | 72.3% | 8.6 | 23.3% | 65.1% | 89.6% | 100% |
+| all three | 38.2% / 10.6 | 31.7% | 27.1% | 65.3% | 10.9 | 26.3% | 70.9% | 94.1% | 100% |
+
+On val, d-noleak finds 36.6% of the 100+ MW pixels (FDCF 100%, b-shift 97.9%). At strong fires its probability is high but under its threshold: within 1 px of the 258 test pixels at 100+ MW, the median is 0.993. Pixels with band 7 at 320-340 K reach 0.995 90% of the time, at 360 K or more only 16%. It scores the hottest fires lower than moderate ones.
 **Findings:**
-- At the same false-alarm budget, d-noleak finds more fires than b-shift (cluster recall 20.7% vs 16.1%) and with higher precision (81% vs 69%). The gain is at night: 23.6% of fire pixels vs 5.9% (FDCF: 1.3%). By day the two are about equal (22.2% vs 23.6%).
+- At the same false-alarm budget, d-noleak finds more fires than b-shift (cluster recall 20.7% vs 16.1%) and with higher precision (81% vs 69%). The gain is on small fires (0-10 MW, 75% of VIIRS pixels) and at night: 23.6% of fire pixels vs 5.9% (FDCF: 1.3%). But it misses most strong fires, the ones that matter most for alerts: 32% of 100+ MW pixels vs b-shift's 93%.
+- The two models fail on different fires, so their union adds up: on test it finds 30.5% of fire pixels (b-shift 20.0%, FDCF 14.8%) and 98% of the strong ones, with 6.7 false clusters per scene, 30% over FDCF's 5.1. Confirmation in 2 of 3 images roughly halves those false clusters (stage 4).
 - The leak fix removes the position dependence. The model now detects fires anywhere in the scene, including many places with no VIIRS fire, so it needs a much higher threshold.
 - TTA averages out d-noleak's saturated peaks, so it needs its own threshold. Calibrated on val (0.99), it adds 3.6 points of recall (22.5% to 26.1%) and 1.3 false clusters per scene. It's ~6x slower (~29 s vs ~5 s on CPU for the whole country). It's worth enabling if the detector Lambda has that time to spare. Measure it there first.
 - Fire recall on full scenes is still far from 95%: most VIIRS fire pixels are too faint for GOES (stage 1).
 **Alternatives considered:**
-- Keep b-shift: it is slightly better by day, but finds a quarter as many fires at night, and its patch metrics can't be trusted (leak).
-- Use a different model by day and by night: by day the two are within noise of each other, so this adds a second model for no clear gain.
+- d-noleak alone at 0.995: more fires overall at fewer false alarms than the union, but it misses two thirds of the strongest fires. Rejected for alerts.
+- d-noleak alone at a lower threshold (0.99: ~75% of strong fires by the probabilities above): val false clusters rise to 14 by day and 6 at night, above the budget, and it still trails b-shift on strong fires.
+- d-noleak OR FDCF: similar recall, all strong fires, but 8.6 false clusters per scene, and production would also have to fetch FDCF.
 **Consequences:**
-- To deploy: upload d-noleak's `model_best.pt`, `norm_stats.json` and `model_config.json` (`threshold` 0.995, `night_threshold` 0.995) to the artifacts bucket.
-- The default alert `min_probability` of 0.65 is now below the detection threshold. Every detection can alert, so stage 4's confirmation matters more.
+- Next code change: run a second checkpoint in `run_detection` and report the union. Model time doubles (~5 s to ~10 s on CPU for the country).
+- Next training run: find why d-noleak scores strong fires lower. Suspects are hour balancing, which cuts the weight of 17-18 UTC fire samples where most strong fires are, and how rare very hot pixels are. One desktop run with `--no-balance-hours` tests the first.
+- d-noleak's thresholds (0.995) sit above the default alert `min_probability` of 0.65, so every one of its detections can alert. Stage 4's confirmation matters more for it.
 - `train_model`'s recall-target rule picks the lowest candidate (0.001) because val never reaches 95%. Scene calibration replaces that threshold for deployment.
