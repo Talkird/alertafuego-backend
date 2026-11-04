@@ -549,3 +549,33 @@ On val, d-noleak finds 36.6% of the 100+ MW pixels (FDCF 100%, b-shift 97.9%). A
 - Next training run: find why d-noleak scores strong fires lower. Suspects are hour balancing, which cuts the weight of 17-18 UTC fire samples where most strong fires are, and how rare very hot pixels are. One desktop run with `--no-balance-hours` tests the first.
 - d-noleak's thresholds (0.995) sit above the default alert `min_probability` of 0.65, so every one of its detections can alert. Stage 4's confirmation matters more for it.
 - `train_model`'s recall-target rule picks the lowest candidate (0.001) because val never reaches 95%. Scene calibration replaces that threshold for deployment.
+
+### [2026-11-03] — Summary of the recall plan without new exports: what worked, what to deploy, what's next
+
+**Context:** End of `docs/plan-recall-no-export.md` (workspace root), stages 1-4, on branches `feat/scene-eval`, `feat/fdcf-baseline`, `feat/stage3-leak-fix` and `feat/stage4-grouping`. Target: fire recall above 95%, with false alarms accepted but measured. Everything is measured on 30 cached full-Argentina scenes (val days for choices, test days scored once) against VIIRS, beside NOAA's FDCF.
+**Decision:**
+- Deploy now: b-shift with whole-raster prediction (already in `run_detection`), `threshold` 0.005 and `night_threshold` 0.08 in its `model_config.json`, and `GROUP_FIRES=1`.
+- Next: the b-shift OR d-noleak union in `run_detection` (stage 3 result), then `CONFIRM_ALERTS=1` once detection runs every 10 minutes.
+- Restate the recall target by fire strength. 95% of all VIIRS pixels is out of reach from GOES at 2 km, while strong fires are within reach.
+**What improved recall and false alarms (test scenes, fire pixel recall / false clusters per scene):**
+- Whole-raster prediction instead of 32x32 tiles, no retraining: b-shift at the deployed 0.08 went from 8.8% / 67 to 11.4% / 1.1 (all 30 scenes). Its tiles only found fires near their centers (shift leak).
+- Thresholds from a false-alarm budget equal to FDCF's, per day and night, instead of F2: b-shift at 0.005 / 0.08 reaches 20.0% / 3.2, against FDCF's 14.8% / 5.1.
+- Leak-free training with hour balancing (d-noleak): honest patch metrics (centered = shifted), and 23.6% of fire pixels at night vs 5.9%. It misses strong fires, though (below).
+- Union of b-shift and d-noleak: 30.5% / 6.7, cluster recall 26.3% (FDCF 11.0%), and 98% of 100+ MW pixels.
+- Confirmation in 2 of 3 images: about half the false clusters, keeping about 85% of the fires found (10 scenes, two models).
+- Grouping adjacent pixels: 28 to 15 detections per scene, losing 2 of 1,196 fire clusters.
+**What didn't:**
+- The 95% target. 75% of the overpass VIIRS pixels are under 10 MW, and GOES barely sees those (FDCF 8.5%, the union 25.5%). By strength, the union finds 98% of fire pixels at 100+ MW and 92% at 30-100 MW: the target holds for strong fires, not for all.
+- d-noleak alone: it finds 32% of 100+ MW pixels, because it scores the hottest pixels just under its threshold.
+- TTA: +3.6 points of recall for d-noleak, but only with its own threshold, at ~6x the model time. Optional.
+- F2 as the calibration rule: it picked 150-230 false clusters per scene.
+- Patch metrics as a model selector: they hid the shift leak (82% on patches, 10% on scenes).
+**Deferred items (need exports), ranked by expected value:**
+1. Hard-example mining from full scenes on train days. False alarms now set every threshold, and fire-free training samples are random land at least 50 km from any fire, so the model never sees the hot ground, glint and cloud edges it confuses with fire. d-noleak's saturated probabilities point the same way.
+2. Fire-free samples from the same GOES images as the fire samples. This is a cheaper form of 1, and it fixes the time-of-day imbalance at the source instead of by weighting.
+3. Earlier images (t-10/t-20) as model input. Confirmation shows that time halves false alarms, and as an input it would not delay alerts by an image.
+4. FDCF as an input channel. The model union already reaches 98% on strong fires, so FDCF adds less than when this was planned. Its 12-minute publishing delay keeps it viable later.
+**Consequences:**
+- No-export next steps: the union code, and one desktop run with `--no-balance-hours` to find d-noleak's strong-fire weakness.
+- Alert areas default to `min_probability` 0.65. Product decision: with b-shift's thresholds most detections never alert. With the union, d-noleak's (0.995) all can.
+- `evaluate_scenes` (fetch, calibrate, score, `--previous`) is the yardstick for any new model. Choose thresholds on val scenes, and report test scenes once.
